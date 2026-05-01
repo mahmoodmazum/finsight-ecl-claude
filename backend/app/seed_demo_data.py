@@ -4,46 +4,107 @@ so every page of the application shows meaningful numbers.
 
 Run:  python -m app.seed_demo_data
 
-SQL Server FK constraints are checked immediately (not deferred), so this
-script commits each dependency layer separately:
-  1. Users, segments, parameters, macro scenarios
+Uses synchronous pyodbc directly (not SQLAlchemy async) to avoid the
+aioodbc 'Connection is busy with results for another command' error on
+SQL Server. This script only runs once so sync is perfectly fine.
+
+Phases:
+  1. Users, roles, segments, parameters, macro scenarios
   2. Loan accounts + collateral + staging results
   3. ECL results  (FK -> loan_accounts)
   4. Provision runs + movements + GL entries  (FK -> provision_runs)
   5. Overlays, risk register, audit log
 """
-import asyncio
+import os
 import traceback
 import uuid
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.database import AsyncSessionLocal
-from app.auth.service import hash_password
-from app.auth.models import User
-from app.models.segment import Segment
-from app.models.loan import LoanAccount, Collateral
-from app.models.staging import StagingResult, PDParameter, LGDParameter
-from app.models.ecl import ECLResult
-from app.models.macro import MacroScenario
-from app.models.provision import ProvisionRun, ProvisionMovement, GLEntry
-from app.models.overlay import ManagementOverlay
-from app.models.audit import RiskRegister
-from app.models.rbac import UserRole
+import bcrypt
+import pyodbc
 
 REPORTING_MONTH = "202503"
 PRIOR_MONTH     = "202502"
 NOW             = datetime.now(timezone.utc)
 
+
 # ---------------------------------------------------------------------------
-# Helper
+# Connection
+# ---------------------------------------------------------------------------
+
+def get_conn():
+    server   = os.getenv("DB_SERVER")
+    database = os.getenv("DB_NAME")
+    username = os.getenv("DB_USER")
+    password = os.getenv("DB_PASSWORD")
+    driver   = os.getenv("DB_DRIVER", "ODBC Driver 17 for SQL Server")
+    conn_str = (
+        f"DRIVER={{{driver}}};"
+        f"SERVER={server},{os.getenv('DB_PORT', '1433')};"
+        f"DATABASE={database};"
+        f"UID={username};"
+        f"PWD={password};"
+        "TrustServerCertificate=yes;"
+    )
+    return pyodbc.connect(conn_str)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
 # ---------------------------------------------------------------------------
 
 def d(x):
     return Decimal(str(x))
+
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def exists(conn, table, where, params):
+    cursor = conn.cursor()
+    cursor.execute(f"SELECT COUNT(*) FROM {table} WHERE {where}", params)
+    count = cursor.fetchone()[0]
+    cursor.close()
+    return count > 0
+
+
+def execute(conn, sql, params=None):
+    cursor = conn.cursor()
+    if params:
+        cursor.execute(sql, params)
+    else:
+        cursor.execute(sql)
+    cursor.close()
+    conn.commit()
+
+
+def fetch_one(conn, sql, params=None):
+    cursor = conn.cursor()
+    if params:
+        cursor.execute(sql, params)
+    else:
+        cursor.execute(sql)
+    row = cursor.fetchone()
+    cursor.close()
+    return row
+
+
+def fetch_all(conn, sql, params=None):
+    cursor = conn.cursor()
+    if params:
+        cursor.execute(sql, params)
+    else:
+        cursor.execute(sql)
+    rows = cursor.fetchall()
+    cursor.close()
+    return rows
+
+
+def scalar(conn, sql, params=None):
+    row = fetch_one(conn, sql, params)
+    return row[0] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -82,7 +143,6 @@ DEMO_SEGMENTS = [
 
 SEG_INDEX = {s["segment_id"]: s for s in DEMO_SEGMENTS}
 
-# 12M PD per segment
 SEG_PD = {
     "SEG-01": d("0.018000"), "SEG-02": d("0.022000"),
     "SEG-03": d("0.032000"), "SEG-04": d("0.038000"),
@@ -138,10 +198,10 @@ def ecl_for(loan):
     else:
         pd_lt = pd12; pd_use = pd12
 
-    raw     = ead * pd_use * lgd * df
-    base    = raw * d("1.0")
-    opt     = raw * d("0.875")
-    pess    = raw * d("1.280")
+    raw      = ead * pd_use * lgd * df
+    base     = raw * d("1.0")
+    opt      = raw * d("0.875")
+    pess     = raw * d("1.280")
     weighted = base * d("0.50") + opt * d("0.25") + pess * d("0.25")
     q = d("0.0001")
     return dict(
@@ -297,608 +357,536 @@ ALL_LOANS = [
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Seed phases
 # ---------------------------------------------------------------------------
 
-async def exists(db: AsyncSession, table: str, where: str, params: dict) -> bool:
-    r = await db.execute(text(f"SELECT 1 FROM {table} WHERE {where}"), params)
-    row = r.fetchone()
-    r.close()
-    return row is not None
-
-
-# ---------------------------------------------------------------------------
-# Seed phases -- each manages its own session(s) and commits after every INSERT
-# ---------------------------------------------------------------------------
-
-async def phase1_users_and_segments() -> tuple[str, str, str]:
+def phase1_users_and_segments(conn) -> tuple:
     """Returns (admin_id, cro_id, analyst_id)."""
     print("  [Phase 1] Users, segments, parameters, macro scenarios...")
 
-    user_ids: dict[str, str] = {}
+    # --- admin user
+    row = fetch_one(conn, "SELECT user_id FROM users WHERE email = ?", ("admin@finsight.com",))
+    if row:
+        admin_id = row[0]
+    else:
+        admin_id = str(uuid.uuid4())
+        execute(conn,
+            "INSERT INTO users (user_id, email, password_hash, full_name, role, is_active, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (admin_id, "admin@finsight.com", hash_password("Admin@123456"),
+             "System Administrator", "ADMIN", 1, "DEMO_SEED", NOW))
 
-    # --- users (own session)
-    async with AsyncSessionLocal() as db:
-        r = await db.execute(text("SELECT user_id FROM users WHERE email = 'admin@finsight.com'"))
-        row = r.fetchone()
-        r.close()
-        if row:
-            admin_id = row[0]
-        else:
-            admin_id = str(uuid.uuid4())
-            db.add(User(user_id=admin_id, email="admin@finsight.com",
-                        password_hash=hash_password("Admin@123456"),
-                        full_name="System Administrator", role="ADMIN",
-                        is_active=True, created_by="DEMO_SEED"))
-            await db.commit()
-            await asyncio.sleep(0.1)
+    # --- role map
+    role_rows = fetch_all(conn, "SELECT name, role_id FROM roles WHERE is_system = 1")
+    role_map = {r[0]: r[1] for r in role_rows}
 
-        user_ids["admin@finsight.com"] = admin_id
-
-        # role map
-        r2 = await db.execute(text("SELECT name, role_id FROM roles WHERE is_system = 1"))
-        role_map = {name: rid for name, rid in r2}
-        r2.close()
-
-        # extra users
-        for email, full_name, legacy_role, role_key in [
-            ("cro@finsight.com",          "Chief Risk Officer",            "CRO",     "CRO"),
-            ("analyst@finsight.com",      "ECL Analyst",                   "ANALYST", "ANALYST"),
-            ("viewer@finsight.com",       "Read-Only Viewer",              "VIEWER",  "VIEWER"),
-            ("rahman.ahmed@finsight.com", "Md. Rahman Ahmed (Analyst)",    "ANALYST", "ANALYST"),
-            ("fatema.begum@finsight.com", "Fatema Begum (Finance)",        "VIEWER",  "VIEWER"),
-        ]:
-            ck = await db.execute(text("SELECT user_id FROM users WHERE email = :e"), {"e": email})
-            ex = ck.fetchone()
-            ck.close()
-            if ex:
-                user_ids[email] = ex[0]
-                continue
-            uid = str(uuid.uuid4())
-            db.add(User(user_id=uid, email=email,
-                        password_hash=hash_password("Demo@123456"),
-                        full_name=full_name, role=legacy_role,
-                        is_active=True, created_by=admin_id))
-            await db.commit()
-            await asyncio.sleep(0.1)
-            user_ids[email] = uid
-            rid = role_map.get(role_key)
-            if rid:
-                try:
-                    db.add(UserRole(user_id=uid, role_id=rid, assigned_by=admin_id))
-                    await db.commit()
-                    await asyncio.sleep(0.1)
-                except Exception:
-                    await db.rollback()
+    # --- extra users
+    user_ids = {"admin@finsight.com": admin_id}
+    for email, full_name, legacy_role, role_key in [
+        ("cro@finsight.com",          "Chief Risk Officer",            "CRO",     "CRO"),
+        ("analyst@finsight.com",      "ECL Analyst",                   "ANALYST", "ANALYST"),
+        ("viewer@finsight.com",       "Read-Only Viewer",              "VIEWER",  "VIEWER"),
+        ("rahman.ahmed@finsight.com", "Md. Rahman Ahmed (Analyst)",    "ANALYST", "ANALYST"),
+        ("fatema.begum@finsight.com", "Fatema Begum (Finance)",        "VIEWER",  "VIEWER"),
+    ]:
+        ex = fetch_one(conn, "SELECT user_id FROM users WHERE email = ?", (email,))
+        if ex:
+            user_ids[email] = ex[0]
+            continue
+        uid = str(uuid.uuid4())
+        execute(conn,
+            "INSERT INTO users (user_id, email, password_hash, full_name, role, is_active, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (uid, email, hash_password("Demo@123456"), full_name, legacy_role, 1, admin_id, NOW))
+        user_ids[email] = uid
+        rid = role_map.get(role_key)
+        if rid:
+            try:
+                execute(conn,
+                    "INSERT INTO user_roles (user_id, role_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?)",
+                    (uid, rid, admin_id, NOW))
+            except Exception:
+                conn.rollback()
 
     cro_id     = user_ids.get("cro@finsight.com",     admin_id)
     analyst_id = user_ids.get("analyst@finsight.com", admin_id)
 
-    # --- segments (new session)
-    async with AsyncSessionLocal() as db:
-        for seg in DEMO_SEGMENTS:
-            if not await exists(db, "segments", "segment_id = :x", {"x": seg["segment_id"]}):
-                db.add(Segment(**seg, is_active=True, created_by=admin_id))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    # --- segments
+    for seg in DEMO_SEGMENTS:
+        if not exists(conn, "segments", "segment_id = ?", (seg["segment_id"],)):
+            execute(conn,
+                "INSERT INTO segments (segment_id, segment_name, assessment_method, collateral_type, "
+                "rating_band, unsecured_lgd_floor, ccf, is_active, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (seg["segment_id"], seg["segment_name"], seg["assessment_method"],
+                 seg["collateral_type"], seg["rating_band"],
+                 float(seg["unsecured_lgd_floor"]), float(seg["ccf"]),
+                 1, admin_id, NOW))
 
     # --- macro scenarios for 202503
-    async with AsyncSessionLocal() as db:
-        for name, wt, gdp, cpi, usd, repo, npl, mult in [
-            ("BASE",        "0.5000","0.0620","0.0810","110.0000","0.0850","0.0920","1.000000"),
-            ("OPTIMISTIC",  "0.2500","0.0750","0.0580","105.0000","0.0750","0.0780","0.875000"),
-            ("PESSIMISTIC", "0.2500","0.0410","0.1230","128.0000","0.1050","0.1350","1.280000"),
-        ]:
-            if not await exists(db, "macro_scenarios",
-                                "reporting_month=:m AND scenario_name=:n",
-                                {"m": REPORTING_MONTH, "n": name}):
-                db.add(MacroScenario(
-                    scenario_id=str(uuid.uuid4()), reporting_month=REPORTING_MONTH,
-                    scenario_name=name, weight=d(wt),
-                    gdp_growth=d(gdp), cpi_inflation=d(cpi),
-                    bdt_usd_rate=d(usd), bb_repo_rate=d(repo),
-                    npl_ratio=d(npl), macro_multiplier=d(mult),
-                    approved_by=cro_id, approved_at=NOW,
-                    status="APPROVED", created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    for name, wt, gdp, cpi, usd, repo, npl, rem, exp, mult in [
+        ("BASE",        "0.5000","0.0620","0.0810","110.0000","0.0850","0.0920","0.0500","0.0700","1.000000"),
+        ("OPTIMISTIC",  "0.2500","0.0750","0.0580","105.0000","0.0750","0.0780","0.0900","0.1200","0.875000"),
+        ("PESSIMISTIC", "0.2500","0.0410","0.1230","128.0000","0.1050","0.1350","-0.0200","-0.0300","1.280000"),
+    ]:
+        if not exists(conn, "macro_scenarios",
+                      "reporting_month = ? AND scenario_name = ?",
+                      (REPORTING_MONTH, name)):
+            execute(conn,
+                "INSERT INTO macro_scenarios (scenario_id, reporting_month, scenario_name, weight, "
+                "gdp_growth, cpi_inflation, bdt_usd_rate, bb_repo_rate, npl_ratio, "
+                "remittance_growth, export_growth, macro_multiplier, "
+                "status, approved_by, approved_at, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), REPORTING_MONTH, name,
+                 float(d(wt)), float(d(gdp)), float(d(cpi)), float(d(usd)),
+                 float(d(repo)), float(d(npl)), float(d(rem)), float(d(exp)), float(d(mult)),
+                 "APPROVED", cro_id, NOW, analyst_id, NOW))
 
-    # --- PD + LGD parameters for 202503
-    async with AsyncSessionLocal() as db:
-        obs_wts = [d("0.40"), d("0.30"), d("0.20"), d("0.10")]
-        for seg in DEMO_SEGMENTS:
-            sid = seg["segment_id"]
-            base_pd = SEG_PD[sid]
-            for obs_no, w in enumerate(obs_wts, 1):
-                if not await exists(db, "pd_parameters",
-                                    "segment_id=:s AND reporting_month=:m AND observation_no=:n",
-                                    {"s": sid, "m": REPORTING_MONTH, "n": obs_no}):
-                    raw = base_pd * (d("1") + d(str((obs_no - 1) * 0.05)))
-                    db.add(PDParameter(
-                        pd_param_id=str(uuid.uuid4()), segment_id=sid,
-                        reporting_month=REPORTING_MONTH, observation_no=obs_no,
-                        start_month=f"{int(REPORTING_MONTH[:4]) - obs_no:04d}{REPORTING_MONTH[4:]}",
-                        end_month=REPORTING_MONTH,
-                        total_accounts=200 - obs_no * 10,
-                        default_accounts=max(1, int(float(raw) * (200 - obs_no * 10))),
-                        raw_pd=raw.quantize(d("0.000001")),
-                        observation_weight=w,
-                        weighted_pd=(raw * w).quantize(d("0.000001")),
-                        created_by=analyst_id,
-                    ))
-                    await db.commit()
-                    await asyncio.sleep(0.1)
-            for tier, lgd_val, haircut in [
-                ("OVER_SECURED", d("0.05"), d("0.20")),
-                ("PARTIAL",      d("0.35"), d("0.20")),
-                ("UNSECURED",    seg["unsecured_lgd_floor"], d("0.00")),
-            ]:
-                if not await exists(db, "lgd_parameters",
-                                    "segment_id=:s AND reporting_month=:m AND security_tier=:t",
-                                    {"s": sid, "m": REPORTING_MONTH, "t": tier}):
-                    db.add(LGDParameter(
-                        lgd_id=str(uuid.uuid4()), segment_id=sid,
-                        reporting_month=REPORTING_MONTH, security_tier=tier,
-                        lgd_value=lgd_val, haircut_pct=haircut,
-                        is_active=True, created_by=analyst_id,
-                    ))
-                    await db.commit()
-                    await asyncio.sleep(0.1)
+    # --- PD parameters for 202503
+    obs_wts = [d("0.40"), d("0.30"), d("0.20"), d("0.10")]
+    for seg in DEMO_SEGMENTS:
+        sid = seg["segment_id"]
+        base_pd = SEG_PD[sid]
+        for obs_no, w in enumerate(obs_wts, 1):
+            if not exists(conn, "pd_parameters",
+                          "segment_id = ? AND reporting_month = ? AND observation_no = ?",
+                          (sid, REPORTING_MONTH, obs_no)):
+                raw = base_pd * (d("1") + d(str((obs_no - 1) * 0.05)))
+                execute(conn,
+                    "INSERT INTO pd_parameters (pd_param_id, segment_id, reporting_month, "
+                    "observation_no, start_month, end_month, total_accounts, default_accounts, "
+                    "raw_pd, observation_weight, weighted_pd, created_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), sid, REPORTING_MONTH, obs_no,
+                     f"{int(REPORTING_MONTH[:4]) - obs_no:04d}{REPORTING_MONTH[4:]}",
+                     REPORTING_MONTH,
+                     200 - obs_no * 10,
+                     max(1, int(float(raw) * (200 - obs_no * 10))),
+                     float(raw.quantize(d("0.000001"))),
+                     float(w),
+                     float((raw * w).quantize(d("0.000001"))),
+                     analyst_id, NOW))
+
+        # --- LGD parameters for 202503
+        for tier, lgd_val, haircut in [
+            ("OVER_SECURED", d("0.05"), d("0.20")),
+            ("PARTIAL",      d("0.35"), d("0.20")),
+            ("UNSECURED",    seg["unsecured_lgd_floor"], d("0.00")),
+        ]:
+            if not exists(conn, "lgd_parameters",
+                          "segment_id = ? AND reporting_month = ? AND security_tier = ?",
+                          (sid, REPORTING_MONTH, tier)):
+                execute(conn,
+                    "INSERT INTO lgd_parameters (lgd_id, segment_id, reporting_month, "
+                    "security_tier, lgd_value, haircut_pct, is_active, created_by, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), sid, REPORTING_MONTH, tier,
+                     float(lgd_val), float(haircut), 1, analyst_id, NOW))
 
     print(f"     -> users={len(user_ids)}, segments={len(DEMO_SEGMENTS)}, macro=3, PD/LGD params committed")
     return admin_id, cro_id, analyst_id
 
 
-async def phase2a_loan_accounts(analyst_id: str) -> None:
+def phase2a_loan_accounts(conn, analyst_id: str) -> None:
     """Insert loan_accounts only -- commit before child tables."""
-    async with AsyncSessionLocal() as db:
-        for loan in ALL_LOANS:
-            lid = loan["loan_id"]
-            sid = loan["seg"]
-            if not await exists(db, "loan_accounts", "loan_id = :x", {"x": lid}):
-                db.add(LoanAccount(
-                    loan_id=lid, customer_id=loan["cid"], customer_name=loan["name"],
-                    segment_id=sid, outstanding_balance=loan["out"],
-                    sanctioned_limit=loan["out"] * d("1.15"),
-                    undrawn_limit=loan["undr"], currency="BDT",
-                    origination_date=date(2021, 3, 1), maturity_date=date(2028, 3, 31),
-                    interest_rate=loan["eir"], effective_interest_rate=loan["eir"],
-                    cl_status=loan["cls"], dpd=loan["dpd"], crr_rating=loan["crr"],
-                    is_watchlist=loan["wl"], is_forbearance=loan["fb"],
-                    reporting_month=REPORTING_MONTH, created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    for loan in ALL_LOANS:
+        lid = loan["loan_id"]
+        if not exists(conn, "loan_accounts", "loan_id = ?", (lid,)):
+            execute(conn,
+                "INSERT INTO loan_accounts (loan_id, customer_id, customer_name, segment_id, "
+                "outstanding_balance, sanctioned_limit, undrawn_limit, currency, "
+                "origination_date, maturity_date, interest_rate, effective_interest_rate, "
+                "cl_status, dpd, crr_rating, is_watchlist, is_forbearance, "
+                "reporting_month, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (lid, loan["cid"], loan["name"], loan["seg"],
+                 float(loan["out"]), float(loan["out"] * d("1.15")),
+                 float(loan["undr"]), "BDT",
+                 date(2021, 3, 1), date(2028, 3, 31),
+                 float(loan["eir"]), float(loan["eir"]),
+                 loan["cls"], loan["dpd"], loan["crr"],
+                 1 if loan["wl"] else 0,
+                 1 if loan["fb"] else 0,
+                 REPORTING_MONTH, analyst_id, NOW))
     print(f"     -> {len(ALL_LOANS)} loan_accounts committed")
 
 
-async def phase2b_collateral(analyst_id: str) -> None:
+def phase2b_collateral(conn, analyst_id: str) -> None:
     """Insert collateral -- loan_accounts must already be committed."""
     count = 0
-    async with AsyncSessionLocal() as db:
-        for loan in ALL_LOANS:
-            lid = loan["loan_id"]
-            sid = loan["seg"]
-            col_pct = loan.get("col_pct") or 0
-            if col_pct > 0 and not await exists(db, "collateral",
-                                                 "loan_id = :x AND reporting_month = :m",
-                                                 {"x": lid, "m": REPORTING_MONTH}):
-                gross = loan["out"] * d(str(col_pct)) * d("1.25")
-                haircut = d("0.20")
-                db.add(Collateral(
-                    collateral_id=str(uuid.uuid4()), loan_id=lid,
-                    collateral_type="Property" if sid in ("SEG-01","SEG-02","SEG-05")
-                                    else "Goods/LC" if sid == "SEG-07" else "Land/Machinery",
-                    gross_value=gross.quantize(d("0.0001")),
-                    haircut_pct=haircut,
-                    net_value=(gross * (1 - haircut)).quantize(d("0.0001")),
-                    reporting_month=REPORTING_MONTH, created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
-                count += 1
+    for loan in ALL_LOANS:
+        lid = loan["loan_id"]
+        sid = loan["seg"]
+        col_pct = loan.get("col_pct") or 0
+        if col_pct > 0 and not exists(conn, "collateral",
+                                       "loan_id = ? AND reporting_month = ?",
+                                       (lid, REPORTING_MONTH)):
+            gross   = loan["out"] * d(str(col_pct)) * d("1.25")
+            haircut = d("0.20")
+            execute(conn,
+                "INSERT INTO collateral (collateral_id, loan_id, collateral_type, "
+                "gross_value, haircut_pct, net_value, reporting_month, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), lid,
+                 "Property" if sid in ("SEG-01","SEG-02","SEG-05")
+                 else "Goods/LC" if sid == "SEG-07" else "Land/Machinery",
+                 float(gross.quantize(d("0.0001"))),
+                 float(haircut),
+                 float((gross * (1 - haircut)).quantize(d("0.0001"))),
+                 REPORTING_MONTH, analyst_id, NOW))
+            count += 1
     print(f"     -> {count} collateral records committed")
 
 
-async def phase2c_staging(analyst_id: str) -> None:
+def phase2c_staging(conn, analyst_id: str) -> None:
     """Insert staging_results -- loan_accounts must already be committed."""
-    async with AsyncSessionLocal() as db:
-        for loan in ALL_LOANS:
-            lid = loan["loan_id"]
-            if not await exists(db, "staging_results",
-                                 "loan_id = :x AND reporting_month = :m",
-                                 {"x": lid, "m": REPORTING_MONTH}):
-                stg = loan["stage"]
-                db.add(StagingResult(
-                    loan_id=lid, reporting_month=REPORTING_MONTH,
-                    stage=stg,
-                    ifrs_default_flag=(stg == 3),
-                    sicr_flag=(stg >= 2),
-                    dpd_at_staging=loan["dpd"],
-                    cl_status_at_staging=loan["cls"],
-                    crr_at_staging=loan["crr"],
-                    override_flag=False,
-                    created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    for loan in ALL_LOANS:
+        lid = loan["loan_id"]
+        if not exists(conn, "staging_results",
+                      "loan_id = ? AND reporting_month = ?",
+                      (lid, REPORTING_MONTH)):
+            stg = loan["stage"]
+            execute(conn,
+                "INSERT INTO staging_results (loan_id, reporting_month, stage, "
+                "ifrs_default_flag, sicr_flag, dpd_at_staging, cl_status_at_staging, "
+                "crr_at_staging, override_flag, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (lid, REPORTING_MONTH, stg,
+                 1 if stg == 3 else 0,
+                 1 if stg >= 2 else 0,
+                 loan["dpd"], loan["cls"], loan["crr"],
+                 0, analyst_id, NOW))
     print(f"     -> {len(ALL_LOANS)} staging_results committed")
 
 
-async def phase3_ecl(analyst_id: str) -> Decimal:
-    """Insert ECL results -- committed separately after loan_accounts exist."""
+def phase3_ecl(conn, analyst_id: str) -> Decimal:
+    """Insert ECL results."""
     print("  [Phase 3] ECL results...")
 
     total_ecl = d("0")
-    async with AsyncSessionLocal() as db:
-        for loan in ALL_LOANS:
-            lid = loan["loan_id"]
-            if await exists(db, "ecl_results",
-                            "loan_id = :x AND reporting_month = :m",
-                            {"x": lid, "m": REPORTING_MONTH}):
-                # already exists -- add to total
-                r = await db.execute(
-                    text("SELECT ecl_weighted FROM ecl_results WHERE loan_id=:x AND reporting_month=:m"),
-                    {"x": lid, "m": REPORTING_MONTH},
-                )
-                row = r.fetchone()
-                r.close()
-                if row:
-                    total_ecl += d(str(row[0]))
-                continue
+    for loan in ALL_LOANS:
+        lid = loan["loan_id"]
+        if exists(conn, "ecl_results",
+                  "loan_id = ? AND reporting_month = ?",
+                  (lid, REPORTING_MONTH)):
+            row = fetch_one(conn,
+                "SELECT ecl_weighted FROM ecl_results WHERE loan_id = ? AND reporting_month = ?",
+                (lid, REPORTING_MONTH))
+            if row:
+                total_ecl += d(str(row[0]))
+            continue
 
-            e = ecl_for(loan)
-            db.add(ECLResult(
-                loan_id=lid, reporting_month=REPORTING_MONTH, stage=loan["stage"],
-                **e, pd_at_origination=e["pd_12m"], run_id=None, created_by=analyst_id,
-            ))
-            await db.commit()
-            await asyncio.sleep(0.1)
-            total_ecl += e["ecl_weighted"]
+        e = ecl_for(loan)
+        execute(conn,
+            "INSERT INTO ecl_results (loan_id, reporting_month, stage, "
+            "ead, pd_12m, pd_lifetime, lgd, eir, "
+            "ecl_base, ecl_optimistic, ecl_pessimistic, ecl_weighted, "
+            "pd_at_origination, run_id, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (lid, REPORTING_MONTH, loan["stage"],
+             float(e["ead"]), float(e["pd_12m"]), float(e["pd_lifetime"]),
+             float(e["lgd"]), float(e["eir"]),
+             float(e["ecl_base"]), float(e["ecl_optimistic"]),
+             float(e["ecl_pessimistic"]), float(e["ecl_weighted"]),
+             float(e["pd_12m"]), None, analyst_id, NOW))
+        total_ecl += e["ecl_weighted"]
 
     total_ecl = total_ecl.quantize(d("0.0001"))
     print(f"     -> {len(ALL_LOANS)} ecl_results committed | total ECL = {float(total_ecl):.4f} BDT Cr")
     return total_ecl
 
 
-async def phase4_provision(cro_id: str, analyst_id: str, total_ecl: Decimal) -> None:
+def phase4_provision(conn, cro_id: str, analyst_id: str, total_ecl: Decimal) -> None:
     """Insert provision runs, movements, GL entries."""
     print("  [Phase 4] Provision runs, waterfall, GL entries...")
 
-    prior_ecl = (total_ecl * d("0.873")).quantize(d("0.0001"))
+    prior_ecl  = (total_ecl * d("0.873")).quantize(d("0.0001"))
+    run_id     = str(uuid.uuid4())
+    prior_run_id = str(uuid.uuid4())
 
-    run_id = str(uuid.uuid4())
+    # Prior-month LOCKED run (202502)
+    if not exists(conn, "provision_runs",
+                  "reporting_month = ? AND status = 'LOCKED'", (PRIOR_MONTH,)):
+        execute(conn,
+            "INSERT INTO provision_runs (run_id, reporting_month, run_type, status, "
+            "total_ecl, total_stage1_ecl, total_stage2_ecl, total_stage3_ecl, "
+            "initiated_by, approved_by, initiated_at, approved_at, locked_at, "
+            "created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (prior_run_id, PRIOR_MONTH, "MONTH_END", "LOCKED",
+             float(prior_ecl),
+             float((prior_ecl * d("0.38")).quantize(d("0.0001"))),
+             float((prior_ecl * d("0.32")).quantize(d("0.0001"))),
+             float((prior_ecl * d("0.30")).quantize(d("0.0001"))),
+             analyst_id, cro_id,
+             NOW - timedelta(days=32),
+             NOW - timedelta(days=30),
+             NOW - timedelta(days=29),
+             analyst_id, NOW))
 
-    # Provision runs
-    async with AsyncSessionLocal() as db:
-        prior_run_id = str(uuid.uuid4())
-        if not await exists(db, "provision_runs",
-                            "reporting_month=:m AND status='LOCKED'", {"m": PRIOR_MONTH}):
-            db.add(ProvisionRun(
-                run_id=prior_run_id, reporting_month=PRIOR_MONTH,
-                run_type="MONTH_END", status="LOCKED",
-                total_ecl=prior_ecl,
-                total_stage1_ecl=(prior_ecl * d("0.38")).quantize(d("0.0001")),
-                total_stage2_ecl=(prior_ecl * d("0.32")).quantize(d("0.0001")),
-                total_stage3_ecl=(prior_ecl * d("0.30")).quantize(d("0.0001")),
-                initiated_by=analyst_id, approved_by=cro_id,
-                initiated_at=NOW - timedelta(days=32),
-                approved_at=NOW - timedelta(days=30),
-                locked_at=NOW - timedelta(days=29),
-                created_by=analyst_id,
-            ))
-            await db.commit()
-            await asyncio.sleep(0.1)
-
-        if not await exists(db, "provision_runs",
-                            "reporting_month=:m AND status='APPROVED'", {"m": REPORTING_MONTH}):
-            db.add(ProvisionRun(
-                run_id=run_id, reporting_month=REPORTING_MONTH,
-                run_type="MONTH_END", status="APPROVED",
-                total_ecl=total_ecl,
-                total_stage1_ecl=(total_ecl * d("0.36")).quantize(d("0.0001")),
-                total_stage2_ecl=(total_ecl * d("0.34")).quantize(d("0.0001")),
-                total_stage3_ecl=(total_ecl * d("0.30")).quantize(d("0.0001")),
-                initiated_by=analyst_id, approved_by=cro_id,
-                initiated_at=NOW - timedelta(hours=5),
-                approved_at=NOW - timedelta(hours=1),
-                created_by=analyst_id,
-            ))
-            await db.commit()
-            await asyncio.sleep(0.1)
-        else:
-            r = await db.execute(
-                text("SELECT run_id FROM provision_runs WHERE reporting_month=:m AND status='APPROVED'"),
-                {"m": REPORTING_MONTH},
-            )
-            row = r.fetchone()
-            r.close()
-            run_id = row[0] if row else run_id
+    # Current APPROVED run (202503)
+    if not exists(conn, "provision_runs",
+                  "reporting_month = ? AND status = 'APPROVED'", (REPORTING_MONTH,)):
+        execute(conn,
+            "INSERT INTO provision_runs (run_id, reporting_month, run_type, status, "
+            "total_ecl, total_stage1_ecl, total_stage2_ecl, total_stage3_ecl, "
+            "initiated_by, approved_by, initiated_at, approved_at, locked_at, "
+            "created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, REPORTING_MONTH, "MONTH_END", "APPROVED",
+             float(total_ecl),
+             float((total_ecl * d("0.36")).quantize(d("0.0001"))),
+             float((total_ecl * d("0.34")).quantize(d("0.0001"))),
+             float((total_ecl * d("0.30")).quantize(d("0.0001"))),
+             analyst_id, cro_id,
+             NOW - timedelta(hours=5),
+             NOW - timedelta(hours=1),
+             None,
+             analyst_id, NOW))
+    else:
+        row = fetch_one(conn,
+            "SELECT run_id FROM provision_runs WHERE reporting_month = ? AND status = 'APPROVED'",
+            (REPORTING_MONTH,))
+        if row:
+            run_id = row[0]
 
     # Movements
-    async with AsyncSessionLocal() as db:
-        if not await exists(db, "provision_movement", "run_id=:r", {"r": run_id}):
-            for mv_type, pct_str, cnt, notes in [
-                ("OTHER",            str(float(prior_ecl)), 0,  "Opening ECL balance (202502 locked run)"),
-                ("NEW_ORIGINATION",  "0.028", 12, "New originations in March 2025"),
-                ("STAGE_1_TO_2",     "0.094", 18, "Stage 1 -> 2 migrations (SICR events)"),
-                ("STAGE_2_TO_3",     "0.058",  8, "Stage 2 -> 3 migrations (defaults)"),
-                ("CURE_2_TO_1",     "-0.020",  6, "Stage 2 -> 1 cures (SICR resolved)"),
-                ("PARAMETER_CHANGE", "0.039",  0, "PD/LGD parameter update Mar-25"),
-                ("MACRO_UPDATE",     "0.024",  0, "Macro scenario weight revision"),
-                ("REPAYMENT",       "-0.048", 35, "Scheduled loan repayments"),
-                ("WRITE_OFF",       "-0.017",  4, "Write-offs approved by Board"),
-                ("FX",              "0.003",   0, "BDT/USD FX restatement"),
-            ]:
-                if mv_type == "OTHER":
-                    amount = prior_ecl
-                else:
-                    amount = (total_ecl * d(pct_str)).quantize(d("0.0001"))
-                db.add(ProvisionMovement(
-                    movement_id=str(uuid.uuid4()), run_id=run_id,
-                    movement_type=mv_type, amount=amount,
-                    account_count=cnt, notes=notes, created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    if not exists(conn, "provision_movement", "run_id = ?", (run_id,)):
+        for mv_type, pct_str, cnt, notes in [
+            ("OTHER",            str(float(prior_ecl)), 0,  "Opening ECL balance (202502 locked run)"),
+            ("NEW_ORIGINATION",  "0.028", 12, "New originations in March 2025"),
+            ("STAGE_1_TO_2",     "0.094", 18, "Stage 1 -> 2 migrations (SICR events)"),
+            ("STAGE_2_TO_3",     "0.058",  8, "Stage 2 -> 3 migrations (defaults)"),
+            ("CURE_2_TO_1",     "-0.020",  6, "Stage 2 -> 1 cures (SICR resolved)"),
+            ("PARAMETER_CHANGE", "0.039",  0, "PD/LGD parameter update Mar-25"),
+            ("MACRO_UPDATE",     "0.024",  0, "Macro scenario weight revision"),
+            ("REPAYMENT",       "-0.048", 35, "Scheduled loan repayments"),
+            ("WRITE_OFF",       "-0.017",  4, "Write-offs approved by Board"),
+            ("FX",              "0.003",   0, "BDT/USD FX restatement"),
+        ]:
+            amount = prior_ecl if mv_type == "OTHER" else (total_ecl * d(pct_str)).quantize(d("0.0001"))
+            execute(conn,
+                "INSERT INTO provision_movement (movement_id, run_id, movement_type, "
+                "amount, account_count, notes, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), run_id, mv_type,
+                 float(amount), cnt, notes, analyst_id, NOW))
 
     # GL entries
-    async with AsyncSessionLocal() as db:
-        if not await exists(db, "gl_entries", "run_id=:r", {"r": run_id}):
-            movement = (total_ecl - prior_ecl).quantize(d("0.0001"))
-            if movement > 0:
-                db.add(GLEntry(
-                    entry_id=str(uuid.uuid4()), run_id=run_id,
-                    entry_date=date(2025, 3, 31),
-                    dr_account="5001-ECL-CHARGE", cr_account="2001-ECL-ALLOWANCE",
-                    amount=movement, currency="BDT",
-                    description=f"ECL provision increase -- March 2025 ({REPORTING_MONTH})",
-                    entry_type="PROVISION_INCREASE", posted=True,
-                    posted_at=NOW - timedelta(hours=1), created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
-            db.add(GLEntry(
-                entry_id=str(uuid.uuid4()), run_id=run_id,
-                entry_date=date(2025, 3, 31),
-                dr_account="2001-ECL-ALLOWANCE", cr_account="2001-WO-RESERVE",
-                amount=(total_ecl * d("0.017")).quantize(d("0.0001")),
-                currency="BDT",
-                description="Write-off provision transfer -- March 2025",
-                entry_type="WRITE_OFF", posted=True,
-                posted_at=NOW - timedelta(hours=1), created_by=analyst_id,
-            ))
-            await db.commit()
-            await asyncio.sleep(0.1)
+    if not exists(conn, "gl_entries", "run_id = ?", (run_id,)):
+        movement = (total_ecl - prior_ecl).quantize(d("0.0001"))
+        if movement > 0:
+            execute(conn,
+                "INSERT INTO gl_entries (entry_id, run_id, entry_date, dr_account, cr_account, "
+                "amount, currency, description, entry_type, posted, posted_at, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), run_id, date(2025, 3, 31),
+                 "5001-ECL-CHARGE", "2001-ECL-ALLOWANCE",
+                 float(movement), "BDT",
+                 f"ECL provision increase -- March 2025 ({REPORTING_MONTH})",
+                 "PROVISION_INCREASE", 1, NOW - timedelta(hours=1), analyst_id, NOW))
+        execute(conn,
+            "INSERT INTO gl_entries (entry_id, run_id, entry_date, dr_account, cr_account, "
+            "amount, currency, description, entry_type, posted, posted_at, created_by, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), run_id, date(2025, 3, 31),
+             "2001-ECL-ALLOWANCE", "2001-WO-RESERVE",
+             float((total_ecl * d("0.017")).quantize(d("0.0001"))), "BDT",
+             "Write-off provision transfer -- March 2025",
+             "WRITE_OFF", 1, NOW - timedelta(hours=1), analyst_id, NOW))
 
-    print(f"     -> provision runs, movements, GL entries committed")
+    print("     -> provision runs, movements, GL entries committed")
 
 
-async def phase5_overlays_risks_audit(admin_id: str, cro_id: str, analyst_id: str) -> None:
+def phase5_overlays_risks_audit(conn, admin_id: str, cro_id: str, analyst_id: str) -> None:
     """Insert management overlays, risk register, audit log."""
     print("  [Phase 5] Overlays, risk register, audit log...")
 
     # Overlays
-    async with AsyncSessionLocal() as db:
-        r = await db.execute(text("SELECT COUNT(*) FROM management_overlays"))
-        cnt = r.scalar()
-        r.close()
-        if cnt == 0:
-            for ov in [
-                dict(segment_id="SEG-01", loan_id=None, overlay_type="PD_CAP_FLOOR",
-                     adjustment_factor=d("1.150000"), status="APPROVED",
-                     submitted_by=analyst_id, approved_by=cro_id,
-                     submitted_at=NOW - timedelta(days=28), approved_at=NOW - timedelta(days=25),
-                     rationale="Large Corporate PD floor +15% after BB CAMELS review -- industrial sector stress.",
-                     effective_from="202502", effective_to=None),
-                dict(segment_id="SEG-08", loan_id=None, overlay_type="SECTOR",
-                     adjustment_factor=d("1.200000"), status="APPROVED",
-                     submitted_by=analyst_id, approved_by=cro_id,
-                     submitted_at=NOW - timedelta(days=5), approved_at=NOW - timedelta(days=2),
-                     rationale="Agriculture: boro season flood risk in Haor basin -- 20% ECL uplift Mar-Jun 2025.",
-                     effective_from="202503", effective_to="202506"),
-                dict(segment_id="SEG-03", loan_id=None, overlay_type="MACRO_MULTIPLIER_ADJ",
-                     adjustment_factor=d("1.100000"), status="PENDING",
-                     submitted_by=analyst_id, approved_by=None,
-                     submitted_at=NOW - timedelta(hours=8), approved_at=None,
-                     rationale="SME Manufacturing: supply chain disruption early warning. Pending CRO sign-off.",
-                     effective_from="202503", effective_to=None),
-                dict(segment_id="SEG-04", loan_id=None, overlay_type="LGD_HAIRCUT",
-                     adjustment_factor=d("1.080000"), status="EXPIRED",
-                     submitted_by=analyst_id, approved_by=cro_id,
-                     submitted_at=NOW - timedelta(days=400), approved_at=NOW - timedelta(days=398),
-                     rationale="SME Trading: collateral >18 months stale -- 8% LGD haircut pending revaluation.",
-                     effective_from="202209", effective_to="202302"),
-                dict(segment_id=None, loan_id="LN-LC-0018", overlay_type="STAGE",
-                     adjustment_factor=d("1.000000"), status="EXPIRED",
-                     submitted_by=cro_id, approved_by=admin_id,
-                     submitted_at=NOW - timedelta(days=480), approved_at=NOW - timedelta(days=478),
-                     rationale="LN-LC-0018 held at Stage 3 pending legal enforcement. DPD <90 due to moratorium.",
-                     effective_from="202212", effective_to="202306"),
-            ]:
-                db.add(ManagementOverlay(
-                    overlay_id=str(uuid.uuid4()),
-                    loan_id=ov["loan_id"], segment_id=ov["segment_id"],
-                    overlay_type=ov["overlay_type"],
-                    adjustment_factor=ov["adjustment_factor"],
-                    rationale=ov["rationale"],
-                    effective_from=ov["effective_from"], effective_to=ov["effective_to"],
-                    status=ov["status"],
-                    submitted_by=ov["submitted_by"], approved_by=ov["approved_by"],
-                    submitted_at=ov["submitted_at"], approved_at=ov["approved_at"],
-                    created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    if scalar(conn, "SELECT COUNT(*) FROM management_overlays") == 0:
+        for ov in [
+            dict(segment_id="SEG-01", loan_id=None, overlay_type="PD_CAP_FLOOR",
+                 adj=d("1.150000"), status="APPROVED",
+                 sub_by=analyst_id, appr_by=cro_id,
+                 sub_at=NOW - timedelta(days=28), appr_at=NOW - timedelta(days=25),
+                 rationale="Large Corporate PD floor +15% after BB CAMELS review -- industrial sector stress.",
+                 eff_from="202502", eff_to=None),
+            dict(segment_id="SEG-08", loan_id=None, overlay_type="SECTOR",
+                 adj=d("1.200000"), status="APPROVED",
+                 sub_by=analyst_id, appr_by=cro_id,
+                 sub_at=NOW - timedelta(days=5), appr_at=NOW - timedelta(days=2),
+                 rationale="Agriculture: boro season flood risk in Haor basin -- 20% ECL uplift Mar-Jun 2025.",
+                 eff_from="202503", eff_to="202506"),
+            dict(segment_id="SEG-03", loan_id=None, overlay_type="MACRO_MULTIPLIER_ADJ",
+                 adj=d("1.100000"), status="PENDING",
+                 sub_by=analyst_id, appr_by=None,
+                 sub_at=NOW - timedelta(hours=8), appr_at=None,
+                 rationale="SME Manufacturing: supply chain disruption early warning. Pending CRO sign-off.",
+                 eff_from="202503", eff_to=None),
+            dict(segment_id="SEG-04", loan_id=None, overlay_type="LGD_HAIRCUT",
+                 adj=d("1.080000"), status="EXPIRED",
+                 sub_by=analyst_id, appr_by=cro_id,
+                 sub_at=NOW - timedelta(days=400), appr_at=NOW - timedelta(days=398),
+                 rationale="SME Trading: collateral >18 months stale -- 8% LGD haircut pending revaluation.",
+                 eff_from="202209", eff_to="202302"),
+            dict(segment_id=None, loan_id="LN-LC-0018", overlay_type="STAGE",
+                 adj=d("1.000000"), status="EXPIRED",
+                 sub_by=cro_id, appr_by=admin_id,
+                 sub_at=NOW - timedelta(days=480), appr_at=NOW - timedelta(days=478),
+                 rationale="LN-LC-0018 held at Stage 3 pending legal enforcement. DPD <90 due to moratorium.",
+                 eff_from="202212", eff_to="202306"),
+        ]:
+            execute(conn,
+                "INSERT INTO management_overlays (overlay_id, loan_id, segment_id, overlay_type, "
+                "adjustment_factor, rationale, effective_from, effective_to, status, "
+                "submitted_by, approved_by, submitted_at, approved_at, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), ov["loan_id"], ov["segment_id"], ov["overlay_type"],
+                 float(ov["adj"]), ov["rationale"], ov["eff_from"], ov["eff_to"],
+                 ov["status"], ov["sub_by"], ov["appr_by"],
+                 ov["sub_at"], ov["appr_at"], analyst_id, NOW))
 
     # Risk register
-    async with AsyncSessionLocal() as db:
-        r2 = await db.execute(text("SELECT COUNT(*) FROM risk_register"))
-        cnt2 = r2.scalar()
-        r2.close()
-        if cnt2 == 0:
-            for risk in [
-                ("PD Model Overfitting Risk",
-                 "Corporate PD model v2.1 may be overfitted to pre-COVID data. Out-of-sample Gini 68.2% vs in-sample 71.4%.",
-                 "MODEL", "HIGH",
-                 "Annual out-of-sample backtesting Q2 2025. XGBoost v3 in validation -- PRODUCTION target June 2025.",
-                 "OPEN", date(2025, 6, 30)),
-                ("T24 DPD Data Lag",
-                 "Temenos T24 DPD lags actual payment date 1-2 business days during month-end batch.",
-                 "DATA", "MEDIUM",
-                 "Daily reconciliation job; fallback to GL payment date if lag >3 days.",
-                 "IN_PROGRESS", date(2025, 5, 15)),
-                ("IFRS 9 vs BB Regulatory Provision Gap",
-                 "ECL under IFRS 9 may fall below BB BRPD minimum -- especially for Stage 1 STD accounts.",
-                 "REGULATORY", "HIGH",
-                 "Monthly dual-run comparison. Escalation to CRO/Board Audit if shortfall >5%.",
-                 "OPEN", date(2025, 7, 31)),
-                ("Macro Scenario Weight Subjectivity",
-                 "50/25/25 weights rely on management judgement -- no formal econometric model.",
-                 "MODEL", "MEDIUM",
-                 "CRO quarterly sign-off. Weight rationale in audit trail. External validator engaged.",
-                 "OPEN", date(2025, 9, 30)),
-                ("Annual Collateral Revaluation Frequency",
-                 "Property collateral revalued annually -- stale valuations may overstate net collateral 10-15%.",
-                 "DATA", "MEDIUM",
-                 "8% interim haircut on collateral >18 months old (active overlay). Bi-annual revaluation under review.",
-                 "IN_PROGRESS", date(2025, 8, 31)),
-            ]:
-                db.add(RiskRegister(
-                    risk_title=risk[0], description=risk[1], category=risk[2],
-                    rating=risk[3], mitigation=risk[4], status=risk[5],
-                    target_date=risk[6], owner=cro_id, created_by=analyst_id,
-                ))
-                await db.commit()
-                await asyncio.sleep(0.1)
+    if scalar(conn, "SELECT COUNT(*) FROM risk_register") == 0:
+        for risk_title, description, category, rating, mitigation, status, target_dt in [
+            ("PD Model Overfitting Risk",
+             "Corporate PD model v2.1 may be overfitted to pre-COVID data. Out-of-sample Gini 68.2% vs in-sample 71.4%.",
+             "MODEL", "HIGH",
+             "Annual out-of-sample backtesting Q2 2025. XGBoost v3 in validation -- PRODUCTION target June 2025.",
+             "OPEN", date(2025, 6, 30)),
+            ("T24 DPD Data Lag",
+             "Temenos T24 DPD lags actual payment date 1-2 business days during month-end batch.",
+             "DATA", "MEDIUM",
+             "Daily reconciliation job; fallback to GL payment date if lag >3 days.",
+             "IN_PROGRESS", date(2025, 5, 15)),
+            ("IFRS 9 vs BB Regulatory Provision Gap",
+             "ECL under IFRS 9 may fall below BB BRPD minimum -- especially for Stage 1 STD accounts.",
+             "REGULATORY", "HIGH",
+             "Monthly dual-run comparison. Escalation to CRO/Board Audit if shortfall >5%.",
+             "OPEN", date(2025, 7, 31)),
+            ("Macro Scenario Weight Subjectivity",
+             "50/25/25 weights rely on management judgement -- no formal econometric model.",
+             "MODEL", "MEDIUM",
+             "CRO quarterly sign-off. Weight rationale in audit trail. External validator engaged.",
+             "OPEN", date(2025, 9, 30)),
+            ("Annual Collateral Revaluation Frequency",
+             "Property collateral revalued annually -- stale valuations may overstate net collateral 10-15%.",
+             "DATA", "MEDIUM",
+             "8% interim haircut on collateral >18 months old (active overlay). Bi-annual revaluation under review.",
+             "IN_PROGRESS", date(2025, 8, 31)),
+        ]:
+            execute(conn,
+                "INSERT INTO risk_register (risk_id, risk_title, description, category, rating, "
+                "mitigation, status, target_date, owner, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), risk_title, description, category, rating,
+                 mitigation, status, target_dt, cro_id, analyst_id, NOW))
 
-    # Audit log (always add fresh entries)
-    async with AsyncSessionLocal() as db:
-        r3 = await db.execute(text("SELECT COUNT(*) FROM audit_log WHERE event_at > :t"),
-                              {"t": NOW - timedelta(days=35)})
-        cnt3 = r3.scalar()
-        r3.close()
-        if cnt3 < 10:
-            for et, ety, eid, uid, days_ago, notes in [
-                ("DATA_LOAD_COMPLETE",    "data_source",    "T24-CBS",        analyst_id, 30, "T24 CBS load: 9,842 loan records, 0 failed"),
-                ("DATA_LOAD_COMPLETE",    "data_source",    "COLLATERAL-SYS", analyst_id, 29, "Collateral load: 4,201 records ingested"),
-                ("DATA_LOAD_COMPLETE",    "data_source",    "MACRO-FILE",     analyst_id, 28, "BB macro indicators uploaded for 202503"),
-                ("SCENARIO_APPROVE",      "macro_scenario", REPORTING_MONTH,  cro_id,      5, "BASE scenario approved for March 2025"),
-                ("SCENARIO_APPROVE",      "macro_scenario", REPORTING_MONTH,  cro_id,      5, "OPTIMISTIC scenario approved -- weight 25%"),
-                ("SCENARIO_APPROVE",      "macro_scenario", REPORTING_MONTH,  cro_id,      5, "PESSIMISTIC scenario approved -- weight 25%"),
-                ("STAGING_RUN",           "staging",        REPORTING_MONTH,  analyst_id,  4, "Staging engine complete: 120 loans classified"),
-                ("STAGE_OVERRIDE",        "staging_result", "LN-LC-0018",     analyst_id,  3, "Stage override submitted: Stage 2->3, legal enforcement"),
-                ("OVERRIDE_APPROVE",      "staging_result", "LN-LC-0018",     cro_id,      3, "Stage override approved -- IFRS 9 para 5.5.3"),
-                ("ECL_RUN_COMPLETE",      "provision_run",  REPORTING_MONTH,  analyst_id,  3, "ECL run complete for March 2025"),
-                ("PROVISION_SUBMIT",      "provision_run",  REPORTING_MONTH,  analyst_id,  2, "Provision run submitted for CRO approval"),
-                ("PROVISION_RUN_COMPLETE","provision_run",  REPORTING_MONTH,  cro_id,      1, "Provision run APPROVED by CRO"),
-                ("OVERLAY_SUBMIT",        "management_overlay","SEG-08",       analyst_id,  5, "Agriculture sector overlay submitted"),
-                ("OVERLAY_APPROVE",       "management_overlay","SEG-08",       cro_id,      2, "Agriculture overlay approved -- boro flood risk"),
-                ("PARAMETER_UPDATE",      "lgd_parameter",  "SEG-01",         analyst_id, 10, "LGD OVER_SECURED updated 4%->5% for SEG-01"),
-                ("MODEL_DEPLOY",          "ml_model",       "PD-CORP-V2",     admin_id,   15, "PD-CORP-V2 promoted to PRODUCTION"),
-                ("REPORT_GENERATE",       "report",         "BB_REGULATORY",  analyst_id,  2, "BB regulatory provision schedule generated"),
-                ("REPORT_GENERATE",       "report",         "IFRS7_DISCLOSURE",analyst_id, 2, "IFRS 7 disclosure tables generated"),
-                ("REPORT_LOCK",           "report",         "ECL_SUMMARY",    cro_id,      1, "ECL Summary locked and submitted to CFO"),
-                ("USER_LOGIN",            "user",           analyst_id,        analyst_id,  0, "Analyst login -- ECL run session"),
-                ("USER_LOGIN",            "user",           cro_id,            cro_id,      0, "CRO login -- approval workflow"),
-                ("DATA_QUALITY_RESOLVE",  "data_quality",  "LN-SM-0025",      analyst_id,  8, "DPD inconsistency resolved -- verified vs T24 ledger"),
-                ("SICR_RULES_UPDATE",     "sicr_rules",    "SYSTEM",          cro_id,     20, "DPD Stage 2 threshold confirmed at 30 DPD"),
-                ("GL_POST",               "gl_entry",       REPORTING_MONTH,  analyst_id,  1, "GL entries posted to FLEXCUBE for March 2025"),
-                ("RISK_REGISTER_UPDATE",  "risk_register", "PD-OVERFIT",      analyst_id, 12, "XGBoost validation milestone added to risk register"),
-            ]:
-                await db.execute(
-                    text("""INSERT INTO audit_log
-                            (event_type,entity_type,entity_id,user_id,user_ip,
-                             before_state,after_state,event_at,notes)
-                            VALUES (:et,:ety,:eid,:uid,:ip,NULL,NULL,:eat,:notes)"""),
-                    {"et": et, "ety": ety, "eid": str(eid), "uid": str(uid),
-                     "ip": "10.10.1.42",
-                     "eat": NOW - timedelta(days=days_ago, hours=2),
-                     "notes": notes},
-                )
-                await db.commit()
-                await asyncio.sleep(0.1)
+    # Audit log
+    cnt = scalar(conn, "SELECT COUNT(*) FROM audit_log WHERE event_at > ?",
+                 (NOW - timedelta(days=35),))
+    if (cnt or 0) < 10:
+        for et, ety, eid, uid, days_ago, notes in [
+            ("DATA_LOAD_COMPLETE",    "data_source",       "T24-CBS",          analyst_id, 30, "T24 CBS load: 9,842 loan records, 0 failed"),
+            ("DATA_LOAD_COMPLETE",    "data_source",       "COLLATERAL-SYS",   analyst_id, 29, "Collateral load: 4,201 records ingested"),
+            ("DATA_LOAD_COMPLETE",    "data_source",       "MACRO-FILE",       analyst_id, 28, "BB macro indicators uploaded for 202503"),
+            ("SCENARIO_APPROVE",      "macro_scenario",    REPORTING_MONTH,    cro_id,      5, "BASE scenario approved for March 2025"),
+            ("SCENARIO_APPROVE",      "macro_scenario",    REPORTING_MONTH,    cro_id,      5, "OPTIMISTIC scenario approved -- weight 25%"),
+            ("SCENARIO_APPROVE",      "macro_scenario",    REPORTING_MONTH,    cro_id,      5, "PESSIMISTIC scenario approved -- weight 25%"),
+            ("STAGING_RUN",           "staging",           REPORTING_MONTH,    analyst_id,  4, "Staging engine complete: 120 loans classified"),
+            ("STAGE_OVERRIDE",        "staging_result",    "LN-LC-0018",       analyst_id,  3, "Stage override submitted: Stage 2->3, legal enforcement"),
+            ("OVERRIDE_APPROVE",      "staging_result",    "LN-LC-0018",       cro_id,      3, "Stage override approved -- IFRS 9 para 5.5.3"),
+            ("ECL_RUN_COMPLETE",      "provision_run",     REPORTING_MONTH,    analyst_id,  3, "ECL run complete for March 2025"),
+            ("PROVISION_SUBMIT",      "provision_run",     REPORTING_MONTH,    analyst_id,  2, "Provision run submitted for CRO approval"),
+            ("PROVISION_RUN_COMPLETE","provision_run",     REPORTING_MONTH,    cro_id,      1, "Provision run APPROVED by CRO"),
+            ("OVERLAY_SUBMIT",        "management_overlay","SEG-08",           analyst_id,  5, "Agriculture sector overlay submitted"),
+            ("OVERLAY_APPROVE",       "management_overlay","SEG-08",           cro_id,      2, "Agriculture overlay approved -- boro flood risk"),
+            ("PARAMETER_UPDATE",      "lgd_parameter",     "SEG-01",           analyst_id, 10, "LGD OVER_SECURED updated 4%->5% for SEG-01"),
+            ("MODEL_DEPLOY",          "ml_model",          "PD-CORP-V2",       admin_id,   15, "PD-CORP-V2 promoted to PRODUCTION"),
+            ("REPORT_GENERATE",       "report",            "BB_REGULATORY",    analyst_id,  2, "BB regulatory provision schedule generated"),
+            ("REPORT_GENERATE",       "report",            "IFRS7_DISCLOSURE", analyst_id,  2, "IFRS 7 disclosure tables generated"),
+            ("REPORT_LOCK",           "report",            "ECL_SUMMARY",      cro_id,      1, "ECL Summary locked and submitted to CFO"),
+            ("USER_LOGIN",            "user",              analyst_id,         analyst_id,  0, "Analyst login -- ECL run session"),
+            ("USER_LOGIN",            "user",              cro_id,             cro_id,      0, "CRO login -- approval workflow"),
+            ("DATA_QUALITY_RESOLVE",  "data_quality",      "LN-SM-0025",       analyst_id,  8, "DPD inconsistency resolved -- verified vs T24 ledger"),
+            ("SICR_RULES_UPDATE",     "sicr_rules",        "SYSTEM",           cro_id,     20, "DPD Stage 2 threshold confirmed at 30 DPD"),
+            ("GL_POST",               "gl_entry",          REPORTING_MONTH,    analyst_id,  1, "GL entries posted to FLEXCUBE for March 2025"),
+            ("RISK_REGISTER_UPDATE",  "risk_register",     "PD-OVERFIT",       analyst_id, 12, "XGBoost validation milestone added to risk register"),
+        ]:
+            execute(conn,
+                "INSERT INTO audit_log (event_type, entity_type, entity_id, user_id, user_ip, "
+                "before_state, after_state, event_at, notes) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (et, ety, str(eid), str(uid), "10.10.1.42",
+                 None, None,
+                 NOW - timedelta(days=days_ago, hours=2),
+                 notes))
 
-    print(f"     -> overlays, risk register, audit log committed")
+    print("     -> overlays, risk register, audit log committed")
 
 
 # ---------------------------------------------------------------------------
-# Verification step
+# Verification
 # ---------------------------------------------------------------------------
 
-async def verify() -> None:
+def verify(conn) -> None:
     print("\n  [Verification] Row counts per table:")
-    tables = [
+    for tbl in [
         "users", "segments", "loan_accounts", "collateral",
         "staging_results", "ecl_results",
         "macro_scenarios", "provision_runs", "provision_movement",
         "gl_entries", "management_overlays", "risk_register", "audit_log",
         "pd_parameters", "lgd_parameters",
-    ]
-    async with AsyncSessionLocal() as db:
-        for tbl in tables:
-            r = await db.execute(text(f"SELECT COUNT(*) FROM {tbl}"))
-            cnt = r.scalar()
-            r.close()
-            status = "OK" if cnt > 0 else "FAIL EMPTY"
-            print(f"    {tbl:<28} {cnt:>5}  {status}")
+    ]:
+        cnt = scalar(conn, f"SELECT COUNT(*) FROM {tbl}")
+        status = "OK" if cnt and cnt > 0 else "FAIL EMPTY"
+        print(f"    {tbl:<28} {cnt or 0:>5}  {status}")
 
 
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
-async def main() -> None:
+def main() -> None:
     print("\n" + "=" * 60)
     print("  FinSight ECL -- Demo Data Seed")
     print("=" * 60)
 
-    # Idempotency check
-    async with AsyncSessionLocal() as db:
-        r = await db.execute(
-            text("SELECT COUNT(*) FROM loan_accounts WHERE reporting_month = :m"),
-            {"m": REPORTING_MONTH},
-        )
-        cnt = r.scalar()
-        r.close()
-        if cnt > 0:
-            print(f"  Demo data for {REPORTING_MONTH} already exists.")
-            await verify()
-            return
+    conn = get_conn()
 
     try:
-        # Phase 1 -- users, segments, parameters
-        admin_id, cro_id, analyst_id = await phase1_users_and_segments()
-        await asyncio.sleep(0.1)
+        # Idempotency check
+        cnt = scalar(conn,
+            "SELECT COUNT(*) FROM loan_accounts WHERE reporting_month = ?",
+            (REPORTING_MONTH,))
+        if cnt and cnt > 0:
+            print(f"  Demo data for {REPORTING_MONTH} already exists.")
+            verify(conn)
+            return
 
-        # Phase 2a -- loan_accounts only (must commit before child tables)
+        # Phase 1 -- users, segments, parameters, macro scenarios
+        admin_id, cro_id, analyst_id = phase1_users_and_segments(conn)
+
+        # Phase 2 -- loan accounts, collateral, staging
         print("  [Phase 2] Loan accounts + collateral + staging results...")
-        await phase2a_loan_accounts(analyst_id)
-        await asyncio.sleep(0.1)
+        phase2a_loan_accounts(conn, analyst_id)
+        phase2b_collateral(conn, analyst_id)
+        phase2c_staging(conn, analyst_id)
 
-        # Phase 2b -- collateral (FK -> loan_accounts, now committed)
-        await phase2b_collateral(analyst_id)
-        await asyncio.sleep(0.1)
+        # Phase 3 -- ECL results
+        total_ecl = phase3_ecl(conn, analyst_id)
 
-        # Phase 2c -- staging_results (FK -> loan_accounts)
-        await phase2c_staging(analyst_id)
-        await asyncio.sleep(0.1)
+        # Phase 4 -- provision runs, movements, GL entries
+        phase4_provision(conn, cro_id, analyst_id, total_ecl)
 
-        # Phase 3 -- ecl_results (FK to loan_accounts -- committed in phase 2)
-        total_ecl = await phase3_ecl(analyst_id)
-        await asyncio.sleep(0.1)
-
-        # Phase 4 -- provision runs + movements + GL entries
-        await phase4_provision(cro_id, analyst_id, total_ecl)
-        await asyncio.sleep(0.1)
-
-        # Phase 5 -- overlays + risk register + audit log
-        await phase5_overlays_risks_audit(admin_id, cro_id, analyst_id)
+        # Phase 5 -- overlays, risk register, audit log
+        phase5_overlays_risks_audit(conn, admin_id, cro_id, analyst_id)
 
     except Exception:
         print("\n  ERROR during seed -- full traceback:")
         traceback.print_exc()
+        conn.close()
         return
 
     # Summary
@@ -915,9 +903,10 @@ async def main() -> None:
     print("    rahman.ahmed@finsight.com / Demo@123456   (ANALYST)")
     print("    fatema.begum@finsight.com / Demo@123456   (VIEWER)")
 
-    await verify()
+    verify(conn)
+    conn.close()
     print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
