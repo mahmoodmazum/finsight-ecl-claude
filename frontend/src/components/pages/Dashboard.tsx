@@ -58,8 +58,8 @@ export function Dashboard() {
 
   // scenario_weights is an array: [{scenario_name, weight, macro_multiplier}]
   const weightMap: Record<string, number> = {}
-  ;(data?.scenario_weights ?? []).forEach((sw: { scenario_name: string; weight: string }) => {
-    weightMap[sw.scenario_name.toUpperCase()] = parseFloat(sw.weight)
+  ;(data?.scenario_weights ?? []).forEach((sw) => {
+    weightMap[sw.scenario_name.toUpperCase()] = parseFloat(String(sw.weight))
   })
 
   return (

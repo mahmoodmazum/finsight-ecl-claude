@@ -103,14 +103,17 @@ export interface PaginatedResponse<T> {
 export interface DashboardSummary {
   month: string
   total_ecl: number
-  stage1_exposure: number
-  stage2_exposure: number
-  stage3_exposure: number
+  stage1_ead: number
+  stage2_ead: number
+  stage3_ead: number
+  stage1_ecl: number
+  stage2_ecl: number
+  stage3_ecl: number
   stage1_pct: number
   stage2_pct: number
   stage3_pct: number
   ecl_by_segment: SegmentECL[]
-  scenario_weights: ScenarioWeights
+  scenario_weights: ScenarioWeight[]
   recent_runs: ProvisionRunSummary[]
 }
 
@@ -118,13 +121,14 @@ export interface SegmentECL {
   segment_id: string
   segment_name: string
   ecl: number
+  ecl_weighted: number
   ead: number
 }
 
-export interface ScenarioWeights {
-  base: number
-  optimistic: number
-  pessimistic: number
+export interface ScenarioWeight {
+  scenario_name: string
+  weight: number
+  macro_multiplier: number
 }
 
 export interface ProvisionRunSummary {
