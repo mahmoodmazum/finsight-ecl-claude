@@ -1,5 +1,5 @@
 """Provision & GL router — runs, movements, GL entries, approval, locking."""
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -13,6 +13,7 @@ from app.core.rbac import require_permission
 from app.core.audit import write_audit_event
 from app.core.exceptions import NotFoundException
 from app.auth.models import User
+from app.config import settings
 from app.models.provision import ProvisionRun, ProvisionMovement, GLEntry
 
 router = APIRouter()
@@ -61,7 +62,7 @@ class MovementOut(BaseModel):
 class GLEntryOut(BaseModel):
     entry_id: str
     run_id: str
-    entry_date: str
+    entry_date: date
     dr_account: str
     cr_account: str
     amount: Decimal
@@ -164,7 +165,7 @@ async def approve_run(
         raise NotFoundException(f"Run {run_id} not found")
     if run.status != "PENDING_APPROVAL":
         raise HTTPException(status_code=409, detail=f"Run status is '{run.status}', expected PENDING_APPROVAL")
-    if run.initiated_by == current_user.user_id:
+    if not settings.DISABLE_DUAL_CONTROL and run.initiated_by == current_user.user_id:
         raise HTTPException(status_code=403, detail="Cannot approve a run you initiated (dual control)")
 
     run.status = "APPROVED"

@@ -7,28 +7,31 @@ import {
 } from '../../../api/admin'
 import type { AdminRole, AdminPermission } from '../../../types'
 import { usePermissions } from '../../../hooks/usePermissions'
+import { COLORS, STYLES, badgeStyle } from '../../../styles/design-system'
 
 const MODULE_LABELS: Record<string, string> = {
-  dashboard: 'Dashboard',
-  data: 'Data Ingestion',
+  dashboard:    'Dashboard',
+  data:         'Data Ingestion',
   segmentation: 'Segmentation',
-  staging: 'Staging',
-  sicr: 'SICR Assessment',
-  ecl: 'ECL Calculation',
-  macro: 'Macro Scenarios',
-  provision: 'Provision & GL',
-  overlays: 'Overlays',
-  reports: 'Reports',
-  governance: 'Model Governance',
-  audit: 'Audit Trail',
-  admin: 'Administration',
+  staging:      'Staging',
+  sicr:         'SICR Assessment',
+  ecl:          'ECL Calculation',
+  macro:        'Macro Scenarios',
+  provision:    'Provision & GL',
+  overlays:     'Overlays',
+  reports:      'Reports',
+  governance:   'Model Governance',
+  audit:        'Audit Trail',
+  admin:        'Administration',
 }
 
-// ── Role Form Modal ──────────────────────────────────────────────────────────
+const labelStyle: React.CSSProperties = { display: 'block', fontSize: 12, fontWeight: 600, color: COLORS.textMuted, marginBottom: 6 }
+
+// ── Role Form Modal ───────────────────────────────────────────────────────────
 
 function RoleFormModal({ role, onClose }: { role?: AdminRole; onClose: () => void }) {
   const qc = useQueryClient()
-  const [name, setName] = useState(role?.name ?? '')
+  const [name, setName]             = useState(role?.name ?? '')
   const [description, setDescription] = useState(role?.description ?? '')
 
   const mutation = useMutation({
@@ -42,25 +45,24 @@ function RoleFormModal({ role, onClose }: { role?: AdminRole; onClose: () => voi
   })
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white border border-app-border rounded-xl w-full max-w-md p-6 shadow-xl">
-        <h2 className="text-base font-semibold text-gray-900 mb-5">{role ? 'Edit Role' : 'Create Role'}</h2>
-        <form onSubmit={(e) => { e.preventDefault(); mutation.mutate() }} className="space-y-4">
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(30,42,59,0.45)', backdropFilter: 'blur(2px)', padding: 16 }}>
+      <div style={{ background: '#FFFFFF', borderRadius: 12, boxShadow: '0 8px 32px rgba(30,42,59,0.16)', width: '100%', maxWidth: 480, padding: 28 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: COLORS.text, marginBottom: 20 }}>{role ? 'Edit Role' : 'Create Role'}</h2>
+        <form onSubmit={(e) => { e.preventDefault(); mutation.mutate() }} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Role Name</label>
-            <input required value={name} onChange={(e) => setName(e.target.value)}
-              className="input w-full" placeholder="e.g. Junior Analyst" />
+            <label style={labelStyle}>Role Name</label>
+            <input required value={name} onChange={(e) => setName(e.target.value)} style={STYLES.input} placeholder="e.g. Junior Analyst" />
           </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">Description</label>
+            <label style={labelStyle}>Description</label>
             <textarea value={description} onChange={(e) => setDescription(e.target.value)}
-              className="input w-full resize-none" rows={3} placeholder="Optional description…" />
+              style={{ ...STYLES.input, resize: 'none' }} rows={3} placeholder="Optional description…" />
           </div>
-          <div className="flex gap-3 pt-2">
-            <button type="submit" disabled={mutation.isPending} className="btn-primary flex-1">
+          <div style={{ display: 'flex', gap: 10, paddingTop: 8 }}>
+            <button type="submit" disabled={mutation.isPending} style={{ ...STYLES.btnPrimary, flex: 1, opacity: mutation.isPending ? 0.6 : 1 }}>
               {mutation.isPending ? 'Saving…' : role ? 'Save' : 'Create'}
             </button>
-            <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
+            <button type="button" onClick={onClose} style={{ ...STYLES.btnGhost, flex: 1 }}>Cancel</button>
           </div>
         </form>
       </div>
@@ -68,7 +70,7 @@ function RoleFormModal({ role, onClose }: { role?: AdminRole; onClose: () => voi
   )
 }
 
-// ── Permission Matrix Modal ──────────────────────────────────────────────────
+// ── Permission Matrix Modal ───────────────────────────────────────────────────
 
 function PermissionMatrixModal({
   role, allPermissions, onClose,
@@ -125,56 +127,52 @@ function PermissionMatrixModal({
   const modules = Object.entries(allPermissions)
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-      <div className="bg-white border border-app-border rounded-xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-xl">
-        <div className="px-6 py-4 border-b border-app-border flex items-center justify-between">
+    <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(30,42,59,0.45)', backdropFilter: 'blur(2px)', padding: 16 }}>
+      <div style={{ background: '#FFFFFF', borderRadius: 12, boxShadow: '0 8px 32px rgba(30,42,59,0.16)', width: '100%', maxWidth: 720, maxHeight: '90vh', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '20px 28px', borderBottom: `1px solid ${COLORS.border}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div>
-            <h2 className="text-base font-semibold text-gray-900">Permission Matrix</h2>
-            <p className="text-sm text-gray-500">{role.name}</p>
+            <h2 style={{ fontSize: 18, fontWeight: 700, color: COLORS.text, marginBottom: 2 }}>Permission Matrix</h2>
+            <p style={{ fontSize: 13, color: COLORS.textMuted }}>{role.name}</p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-400">{selected.size} selected</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <span style={{ fontSize: 12, color: COLORS.textMuted }}>{selected.size} selected</span>
             {role.is_system && (
-              <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded font-medium">
-                System — read only
-              </span>
+              <span style={badgeStyle(COLORS.warning)}>System — read only</span>
             )}
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px', display: 'flex', flexDirection: 'column', gap: 24 }}>
           {isLoading ? (
-            <div className="text-center py-8 text-gray-400">Loading permissions…</div>
+            <div style={{ textAlign: 'center', padding: 32, color: COLORS.textMuted }}>Loading permissions…</div>
           ) : (
             modules.map(([module, perms]) => {
-              const allChecked = perms.every((p) => selected.has(p.permission_id))
+              const allChecked  = perms.every((p) => selected.has(p.permission_id))
               const someChecked = perms.some((p) => selected.has(p.permission_id))
               return (
                 <div key={module}>
-                  <div className="flex items-center gap-2 mb-2">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
                     {!role.is_system && (
                       <input type="checkbox" checked={allChecked}
                         ref={(el) => { if (el) el.indeterminate = someChecked && !allChecked }}
                         onChange={() => toggleModule(perms)}
-                        className="w-4 h-4 rounded accent-primary cursor-pointer" />
+                        style={{ width: 16, height: 16, accentColor: COLORS.primary, cursor: 'pointer' }} />
                     )}
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                    <p style={{ fontSize: 11, fontWeight: 700, color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
                       {MODULE_LABELS[module] ?? module}
                     </p>
                   </div>
-                  <div className={`grid grid-cols-1 md:grid-cols-2 gap-1.5 ${!role.is_system ? 'ml-6' : ''}`}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginLeft: role.is_system ? 0 : 24 }}>
                     {perms.map((perm) => (
                       <label key={perm.permission_id}
-                        className={`flex items-start gap-3 bg-gray-50 hover:bg-gray-100 rounded-lg px-3 py-2 border border-app-border transition-colors ${
-                          role.is_system ? 'cursor-default' : 'cursor-pointer'
-                        }`}>
+                        style={{ display: 'flex', alignItems: 'flex-start', gap: 10, background: COLORS.bg, borderRadius: 7, padding: '8px 12px', border: `1px solid ${COLORS.border}`, cursor: role.is_system ? 'default' : 'pointer' }}>
                         <input type="checkbox" checked={selected.has(perm.permission_id)}
                           onChange={() => toggle(perm.permission_id)}
                           disabled={role.is_system}
-                          className="mt-0.5 w-4 h-4 rounded accent-primary flex-shrink-0" />
-                        <div className="min-w-0">
-                          <p className="text-sm text-gray-800 font-medium">{perm.name}</p>
-                          <p className="text-xs text-gray-400 font-mono">{perm.code}</p>
+                          style={{ marginTop: 2, width: 15, height: 15, accentColor: COLORS.primary, flexShrink: 0 }} />
+                        <div>
+                          <p style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>{perm.name}</p>
+                          <p style={{ fontSize: 11, fontFamily: 'monospace', color: COLORS.textMuted }}>{perm.code}</p>
                         </div>
                       </label>
                     ))}
@@ -185,28 +183,29 @@ function PermissionMatrixModal({
           )}
         </div>
 
-        <div className="px-6 py-4 border-t border-app-border flex gap-3 justify-end">
+        <div style={{ padding: '16px 28px', borderTop: `1px solid ${COLORS.border}`, display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
           {!role.is_system && (
-            <button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending} className="btn-primary">
+            <button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}
+              style={{ ...STYLES.btnPrimary, opacity: saveMutation.isPending ? 0.6 : 1 }}>
               {saveMutation.isPending ? 'Saving…' : 'Save Permissions'}
             </button>
           )}
-          <button onClick={onClose} className="btn-secondary">Close</button>
+          <button onClick={onClose} style={STYLES.btnGhost}>Close</button>
         </div>
       </div>
     </div>
   )
 }
 
-// ── Main Page ─────────────────────────────────────────────────────────────────
+// ── Main Page ──────────────────────────────────────────────────────────────────
 
 export function RoleManagement() {
   const { can } = usePermissions()
   const qc = useQueryClient()
 
   const [showCreate, setShowCreate] = useState(false)
-  const [editRole, setEditRole] = useState<AdminRole | null>(null)
-  const [permRole, setPermRole] = useState<AdminRole | null>(null)
+  const [editRole, setEditRole]     = useState<AdminRole | null>(null)
+  const [permRole, setPermRole]     = useState<AdminRole | null>(null)
 
   const { data: roles = [], isLoading } = useQuery({ queryKey: ['admin-roles'], queryFn: listRoles })
 
@@ -230,78 +229,65 @@ export function RoleManagement() {
   const totalPermCount = Object.values(allPermissions).reduce((acc, p) => acc + p.length, 0)
 
   return (
-    <div className="p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div style={{ padding: 28, display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
-          <h1 className="text-xl font-bold text-gray-900">Role Management</h1>
-          <p className="text-sm text-gray-500 mt-0.5">
-            {roles.length} roles · {totalPermCount} permissions
-          </p>
+          <h1 style={{ fontSize: 22, fontWeight: 700, color: COLORS.text, marginBottom: 4 }}>Role Management</h1>
+          <p style={{ fontSize: 13, color: COLORS.textMuted }}>{roles.length} roles · {totalPermCount} permissions</p>
         </div>
         {can('admin:roles:create') && (
-          <button onClick={() => setShowCreate(true)} className="btn-primary">+ Create Role</button>
+          <button onClick={() => setShowCreate(true)} style={STYLES.btnPrimary}>+ Create Role</button>
         )}
       </div>
 
-      {/* Table */}
-      <div className="bg-white border border-app-border rounded-xl overflow-hidden shadow-sm">
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 border-b border-app-border">
-            <tr className="text-gray-500 text-xs uppercase tracking-wider">
-              <th className="text-left px-4 py-3 font-semibold">Role</th>
-              <th className="text-left px-4 py-3 font-semibold">Type</th>
-              <th className="text-left px-4 py-3 font-semibold">Status</th>
-              <th className="text-right px-4 py-3 font-semibold">Actions</th>
+      <div style={{ ...STYLES.card, padding: 0, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr>
+              {['Role', 'Type', 'Status', ''].map((h) => (
+                <th key={h} style={{ ...STYLES.th, textAlign: h === '' ? 'right' : 'left' }}>{h}</th>
+              ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-app-border">
+          <tbody>
             {isLoading ? (
-              <tr><td colSpan={4} className="text-center py-12 text-gray-400">Loading…</td></tr>
+              <tr><td colSpan={4} style={{ ...STYLES.td, textAlign: 'center', padding: 48, color: COLORS.textMuted }}>Loading…</td></tr>
             ) : roles.length === 0 ? (
-              <tr><td colSpan={4} className="text-center py-12 text-gray-400">No roles found</td></tr>
+              <tr><td colSpan={4} style={{ ...STYLES.td, textAlign: 'center', padding: 48, color: COLORS.textMuted }}>No roles found</td></tr>
             ) : (
-              roles.map((role) => (
-                <tr key={role.role_id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{role.name}</div>
+              roles.map((role, idx) => (
+                <tr key={role.role_id} style={{ background: idx % 2 === 0 ? '#FFF' : '#FAFBFE' }}>
+                  <td style={STYLES.td}>
+                    <div style={{ fontWeight: 600, color: COLORS.text }}>{role.name}</div>
                     {role.description && (
-                      <div className="text-gray-400 text-xs mt-0.5 max-w-xs truncate">{role.description}</div>
+                      <div style={{ fontSize: 12, color: COLORS.textMuted, marginTop: 2, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {role.description}
+                      </div>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    {role.is_system ? (
-                      <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium border bg-amber-50 text-amber-700 border-amber-200">System</span>
-                    ) : (
-                      <span className="inline-flex px-2 py-0.5 rounded text-xs font-medium border bg-blue-50 text-blue-700 border-blue-200">Custom</span>
-                    )}
+                  <td style={STYLES.td}>
+                    <span style={badgeStyle(role.is_system ? COLORS.warning : COLORS.primary)}>
+                      {role.is_system ? 'System' : 'Custom'}
+                    </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <span className={`inline-flex px-2 py-0.5 rounded text-xs font-medium border ${
-                      role.is_active
-                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                        : 'bg-red-50 text-red-700 border-red-200'
-                    }`}>
+                  <td style={STYLES.td}>
+                    <span style={badgeStyle(role.is_active ? COLORS.success : COLORS.danger)}>
                       {role.is_active ? 'Active' : 'Inactive'}
                     </span>
                   </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-3 justify-end">
+                  <td style={{ ...STYLES.td, textAlign: 'right' }}>
+                    <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
                       {can('admin:roles:view') && (
-                        <button onClick={() => setPermRole(role)} className="text-xs text-primary hover:text-primary-dark font-medium transition-colors">
-                          Permissions
-                        </button>
+                        <button onClick={() => setPermRole(role)}
+                          style={{ fontSize: 12, color: COLORS.primary, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Permissions</button>
                       )}
                       {can('admin:roles:edit') && !role.is_system && (
-                        <button onClick={() => setEditRole(role)} className="text-xs text-primary hover:text-primary-dark font-medium transition-colors">
-                          Edit
-                        </button>
+                        <button onClick={() => setEditRole(role)}
+                          style={{ fontSize: 12, color: COLORS.primary, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600 }}>Edit</button>
                       )}
                       {can('admin:roles:delete') && !role.is_system && (
                         <button onClick={() => handleDelete(role)} disabled={deleteMutation.isPending}
-                          className="text-xs text-red-500 hover:text-red-700 font-medium transition-colors">
-                          Delete
-                        </button>
+                          style={{ fontSize: 12, color: COLORS.danger, background: 'none', border: 'none', cursor: 'pointer', fontWeight: 600, opacity: deleteMutation.isPending ? 0.5 : 1 }}>Delete</button>
                       )}
                     </div>
                   </td>

@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import clsx from 'clsx'
+import { COLORS, STYLES, rowBg } from '../../styles/design-system'
 
 export interface ColumnDef<T> {
   key: string
@@ -38,107 +38,123 @@ export function DataTable<T>({
 }: DataTableProps<T>) {
   const totalPages = Math.ceil(totalCount / pageSize)
   const start = totalCount === 0 ? 0 : (page - 1) * pageSize + 1
-  const end = Math.min(page * pageSize, totalCount)
+  const end   = Math.min(page * pageSize, totalCount)
+
+  const paginationBtn = (disabled: boolean): React.CSSProperties => ({
+    padding:      '4px 10px',
+    borderRadius: 5,
+    border:       `1px solid ${COLORS.border}`,
+    background:   'transparent',
+    color:        disabled ? COLORS.border : COLORS.textMuted,
+    cursor:       disabled ? 'default' : 'pointer',
+    fontSize:     12,
+    fontWeight:   600,
+    opacity:      disabled ? 0.4 : 1,
+  })
+
+  const activePaginationBtn: React.CSSProperties = {
+    padding:      '4px 10px',
+    borderRadius: 5,
+    border:       `1px solid ${COLORS.primary}`,
+    background:   COLORS.primary,
+    color:        '#FFFFFF',
+    cursor:       'default',
+    fontSize:     12,
+    fontWeight:   600,
+  }
 
   return (
-    <div className="flex flex-col gap-3">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {searchable && onSearch && (
-        <div className="flex justify-end">
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <input
             type="search"
-            placeholder="Search..."
-            className="px-3 py-1.5 text-sm border border-app-border rounded-lg w-64 focus:outline-none focus:ring-2 focus:ring-primary/30 focus:border-primary"
+            placeholder="Search…"
+            style={{ ...STYLES.input, width: 220 }}
             onChange={(e) => onSearch(e.target.value)}
           />
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-lg border border-app-border">
-        <table className="min-w-full divide-y divide-app-border">
-          <thead className="bg-gray-50">
-            <tr>
-              {columns.map((col) => (
-                <th
-                  key={col.key}
-                  className={clsx(
-                    'px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider',
-                    col.headerClassName
-                  )}
-                >
-                  {col.header}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-app-border">
-            {isLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
-                <tr key={i}>
-                  {columns.map((col) => (
-                    <td key={col.key} className="px-4 py-3">
-                      <div className="h-4 bg-gray-100 rounded animate-pulse" />
-                    </td>
-                  ))}
-                </tr>
-              ))
-            ) : data.length === 0 ? (
+      <div style={{
+        border:       `1px solid ${COLORS.border}`,
+        borderRadius: 10,
+        overflow:     'hidden',
+      }}>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
               <tr>
-                <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-gray-500">
-                  {emptyMessage}
-                </td>
+                {columns.map((col) => (
+                  <th
+                    key={col.key}
+                    className={col.headerClassName}
+                    style={STYLES.th}
+                  >
+                    {col.header}
+                  </th>
+                ))}
               </tr>
-            ) : (
-              data.map((row) => (
-                <tr key={rowKey(row)} className="hover:bg-gray-50 transition-colors">
-                  {columns.map((col) => (
-                    <td key={col.key} className={clsx('px-4 py-3 text-sm text-gray-700', col.className)}>
-                      {col.render ? col.render(row) : String((row as Record<string, unknown>)[col.key] ?? '')}
-                    </td>
-                  ))}
+            </thead>
+            <tbody>
+              {isLoading ? (
+                Array.from({ length: 5 }).map((_, i) => (
+                  <tr key={i} style={rowBg(i)}>
+                    {columns.map((col) => (
+                      <td key={col.key} style={STYLES.td}>
+                        <div className="skeleton" style={{ height: 14 }} />
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              ) : data.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={columns.length}
+                    style={{ ...STYLES.td, textAlign: 'center', padding: '40px 14px', color: COLORS.textMuted, borderBottom: 'none' }}
+                  >
+                    {emptyMessage}
+                  </td>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              ) : (
+                data.map((row, idx) => (
+                  <tr
+                    key={rowKey(row)}
+                    style={rowBg(idx)}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = COLORS.primaryLight }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLTableRowElement).style.background = rowBg(idx).background as string }}
+                  >
+                    {columns.map((col) => (
+                      <td key={col.key} className={col.className} style={STYLES.td}>
+                        {col.render ? col.render(row) : String((row as Record<string, unknown>)[col.key] ?? '')}
+                      </td>
+                    ))}
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
 
-      {/* Pagination */}
-      <div className="flex items-center justify-between text-sm text-gray-500">
-        <span>
-          {totalCount === 0 ? 'No records' : `Showing ${start}–${end} of ${totalCount.toLocaleString()}`}
-        </span>
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => onPageChange(1)}
-            disabled={page <= 1}
-            className="px-2 py-1 rounded border border-app-border disabled:opacity-40 hover:bg-gray-50"
-          >
-            «
-          </button>
-          <button
-            onClick={() => onPageChange(page - 1)}
-            disabled={page <= 1}
-            className="px-2 py-1 rounded border border-app-border disabled:opacity-40 hover:bg-gray-50"
-          >
-            ‹
-          </button>
-          <span className="px-3 py-1 rounded border border-primary bg-primary/5 text-primary font-medium">
-            {page}
+        {/* Pagination bar */}
+        <div style={{
+          background:   '#FFFFFF',
+          borderTop:    `1px solid ${COLORS.border}`,
+          padding:      '10px 16px',
+          display:      'flex',
+          alignItems:   'center',
+          justifyContent: 'space-between',
+        }}>
+          <span style={{ fontSize: 12, color: COLORS.textMuted }}>
+            {totalCount === 0 ? 'No records' : `Showing ${start}–${end} of ${totalCount.toLocaleString()}`}
           </span>
-          <button
-            onClick={() => onPageChange(page + 1)}
-            disabled={page >= totalPages}
-            className="px-2 py-1 rounded border border-app-border disabled:opacity-40 hover:bg-gray-50"
-          >
-            ›
-          </button>
-          <button
-            onClick={() => onPageChange(totalPages)}
-            disabled={page >= totalPages}
-            className="px-2 py-1 rounded border border-app-border disabled:opacity-40 hover:bg-gray-50"
-          >
-            »
-          </button>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button onClick={() => onPageChange(1)} disabled={page <= 1} style={paginationBtn(page <= 1)}>«</button>
+            <button onClick={() => onPageChange(page - 1)} disabled={page <= 1} style={paginationBtn(page <= 1)}>‹</button>
+            <span style={activePaginationBtn}>{page}</span>
+            <button onClick={() => onPageChange(page + 1)} disabled={page >= totalPages} style={paginationBtn(page >= totalPages)}>›</button>
+            <button onClick={() => onPageChange(totalPages)} disabled={page >= totalPages} style={paginationBtn(page >= totalPages)}>»</button>
+          </div>
         </div>
       </div>
     </div>

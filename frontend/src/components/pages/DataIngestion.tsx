@@ -6,6 +6,7 @@ import { useDataSources, useLoadHistory, useQualityIssues, useTriggerIngestion, 
 import type { DataSource, DataLoadHistory, DataQualityIssue } from '../../types'
 import { usePermissions } from '../../hooks/usePermissions'
 import { format, parseISO } from 'date-fns'
+import { COLORS, STYLES, badgeStyle } from '../../styles/design-system'
 
 function fmtDate(d: string | null) {
   if (!d) return '—'
@@ -13,6 +14,12 @@ function fmtDate(d: string | null) {
 }
 
 type Tab = 'sources' | 'history' | 'quality'
+
+const TABS = [
+  { id: 'sources', label: 'Sources' },
+  { id: 'history', label: 'Load History' },
+  { id: 'quality', label: 'Data Quality' },
+]
 
 export function DataIngestion() {
   const [tab, setTab] = useState<Tab>('sources')
@@ -25,22 +32,22 @@ export function DataIngestion() {
   const { data: history, isLoading: histLoading } = useLoadHistory(selectedSource)
   const { data: quality, isLoading: qualLoading } = useQualityIssues(undefined, qualityPage, 50)
   const triggerMutation = useTriggerIngestion()
-  const uploadMutation = useUploadMacroCSV()
+  const uploadMutation  = useUploadMacroCSV()
 
   const sourceColumns: ColumnDef<DataSource>[] = [
-    { key: 'source_name', header: 'Source Name', render: (r) => <span className="font-medium text-gray-900">{r.source_name}</span> },
+    { key: 'source_name', header: 'Source Name', render: (r) => <span style={{ fontWeight: 600, color: COLORS.text }}>{r.source_name}</span> },
     { key: 'source_type', header: 'Type' },
     { key: 'integration_method', header: 'Method' },
-    { key: 'schedule_cron', header: 'Schedule', render: (r) => <code className="text-xs bg-gray-100 px-1.5 py-0.5 rounded">{r.schedule_cron ?? '—'}</code> },
+    { key: 'schedule_cron', header: 'Schedule', render: (r) => <code style={{ fontSize: 11, background: COLORS.bg, padding: '2px 6px', borderRadius: 4 }}>{r.schedule_cron ?? '—'}</code> },
     { key: 'last_run_at', header: 'Last Run', render: (r) => fmtDate(r.last_run_at) },
-    { key: 'last_run_status', header: 'Status', render: (r) => r.last_run_status ? <StatusBadge status={r.last_run_status} size="sm" /> : <span className="text-gray-400">—</span> },
+    { key: 'last_run_status', header: 'Status', render: (r) => r.last_run_status ? <StatusBadge status={r.last_run_status} size="sm" /> : <span style={{ color: COLORS.textMuted }}>—</span> },
     {
       key: 'actions', header: '',
       render: (r) => can('data:trigger') ? (
         <button
           onClick={() => triggerMutation.mutate(r.source_id)}
           disabled={triggerMutation.isPending}
-          className="px-3 py-1 text-xs bg-primary text-white rounded hover:bg-primary-dark disabled:opacity-50"
+          style={{ ...STYLES.btnPrimary, padding: '4px 12px', fontSize: 11, opacity: triggerMutation.isPending ? 0.5 : 1 }}
         >
           Trigger
         </button>
@@ -49,32 +56,33 @@ export function DataIngestion() {
   ]
 
   const historyColumns: ColumnDef<DataLoadHistory>[] = [
-    { key: 'load_id', header: 'Load ID', render: (r) => <span className="font-mono text-xs">{r.load_id}</span> },
-    { key: 'source_id', header: 'Source', render: (r) => <span className="text-xs">{r.source_id}</span> },
+    { key: 'load_id', header: 'Load ID', render: (r) => <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.load_id}</span> },
+    { key: 'source_id', header: 'Source', render: (r) => <span style={{ fontSize: 12 }}>{r.source_id}</span> },
     { key: 'started_at', header: 'Started', render: (r) => fmtDate(r.started_at) },
     { key: 'completed_at', header: 'Completed', render: (r) => fmtDate(r.completed_at) },
     { key: 'status', header: 'Status', render: (r) => <StatusBadge status={r.status} size="sm" /> },
     { key: 'records_loaded', header: 'Loaded', render: (r) => r.records_loaded?.toLocaleString() ?? '—' },
-    { key: 'records_failed', header: 'Failed', render: (r) => r.records_failed ? <span className="text-red-600 font-medium">{r.records_failed}</span> : '—' },
+    { key: 'records_failed', header: 'Failed', render: (r) => r.records_failed ? <span style={{ color: COLORS.danger, fontWeight: 600 }}>{r.records_failed}</span> : '—' },
   ]
 
   const qualityColumns: ColumnDef<DataQualityIssue>[] = [
-    { key: 'issue_id', header: 'Issue ID', render: (r) => <span className="font-mono text-xs">{r.issue_id}</span> },
+    { key: 'issue_id', header: 'Issue ID', render: (r) => <span style={{ fontFamily: 'monospace', fontSize: 11 }}>{r.issue_id}</span> },
     { key: 'loan_id', header: 'Loan ID', render: (r) => r.loan_id ?? '—' },
     { key: 'field_name', header: 'Field', render: (r) => r.field_name ?? '—' },
-    { key: 'error_type', header: 'Error Type', render: (r) => <span className="text-xs font-medium text-orange-700 bg-orange-50 border border-orange-200 px-2 py-0.5 rounded-full">{r.error_type}</span> },
-    { key: 'error_detail', header: 'Detail', render: (r) => <span className="text-xs text-gray-500 truncate max-w-xs block">{r.error_detail ?? '—'}</span> },
-    { key: 'is_quarantined', header: 'Quarantined', render: (r) => r.is_quarantined ? <span className="text-red-600 text-xs font-medium">Yes</span> : <span className="text-gray-400 text-xs">No</span> },
-    { key: 'resolved', header: 'Resolved', render: (r) => r.resolved ? <span className="text-green-600 text-xs font-medium">Yes</span> : <span className="text-gray-400 text-xs">No</span> },
+    { key: 'error_type', header: 'Error Type', render: (r) => <span style={badgeStyle(COLORS.danger)}>{r.error_type}</span> },
+    { key: 'error_detail', header: 'Detail', render: (r) => <span style={{ fontSize: 11, color: COLORS.textMuted }}>{r.error_detail ?? '—'}</span> },
+    { key: 'is_quarantined', header: 'Quarantined', render: (r) => r.is_quarantined ? <span style={badgeStyle(COLORS.danger)}>Yes</span> : <span style={{ color: COLORS.textMuted, fontSize: 12 }}>No</span> },
+    { key: 'resolved', header: 'Resolved', render: (r) => r.resolved ? <span style={badgeStyle(COLORS.success)}>Yes</span> : <span style={{ color: COLORS.textMuted, fontSize: 12 }}>No</span> },
   ]
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between">
-        <SectionHeader title="Data Ingestion" subtitle="Monitor and manage data source loads" />
-        {can('data:upload') && (
-          <div>
-            <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={(e) => {
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+      <SectionHeader
+        title="Data Ingestion"
+        subtitle="Monitor and manage data source loads"
+        actions={can('data:upload') ? (
+          <>
+            <input ref={fileRef} type="file" accept=".csv" style={{ display: 'none' }} onChange={(e) => {
               const f = e.target.files?.[0]
               if (f) uploadMutation.mutate(f)
               e.target.value = ''
@@ -82,25 +90,33 @@ export function DataIngestion() {
             <button
               onClick={() => fileRef.current?.click()}
               disabled={uploadMutation.isPending}
-              className="px-4 py-2 text-sm bg-white border border-app-border rounded-lg hover:bg-gray-50 disabled:opacity-50"
+              style={{ ...STYLES.btnGhost, opacity: uploadMutation.isPending ? 0.5 : 1 }}
             >
               Upload Macro CSV
             </button>
-          </div>
-        )}
-      </div>
+          </>
+        ) : undefined}
+      />
 
-      {/* Tabs */}
-      <div className="flex gap-1 border-b border-app-border">
-        {(['sources', 'history', 'quality'] as Tab[]).map((t) => (
+      {/* Tab bar */}
+      <div style={{ display: 'flex', gap: 2, borderBottom: `1px solid ${COLORS.border}`, paddingBottom: 0 }}>
+        {TABS.map((t) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`px-4 py-2 text-sm font-medium capitalize border-b-2 transition-colors ${
-              tab === t ? 'border-primary text-primary' : 'border-transparent text-gray-500 hover:text-gray-700'
-            }`}
+            key={t.id}
+            onClick={() => setTab(t.id as Tab)}
+            style={{
+              padding:      '8px 18px',
+              fontSize:     13,
+              fontWeight:   600,
+              border:       'none',
+              background:   'transparent',
+              color:        tab === t.id ? COLORS.primary : COLORS.textMuted,
+              borderBottom: `2px solid ${tab === t.id ? COLORS.primary : 'transparent'}`,
+              cursor:       'pointer',
+              marginBottom: -1,
+            }}
           >
-            {t === 'sources' ? 'Sources' : t === 'history' ? 'Load History' : 'Data Quality'}
+            {t.label}
           </button>
         ))}
       </div>
@@ -120,19 +136,17 @@ export function DataIngestion() {
       )}
 
       {tab === 'history' && (
-        <div className="space-y-4">
-          <div className="flex items-center gap-3">
-            <select
-              value={selectedSource ?? ''}
-              onChange={(e) => setSelectedSource(e.target.value || undefined)}
-              className="px-3 py-1.5 text-sm border border-app-border rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-primary/30"
-            >
-              <option value="">All sources</option>
-              {sources?.map((s) => (
-                <option key={s.source_id} value={s.source_id}>{s.source_name}</option>
-              ))}
-            </select>
-          </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <select
+            value={selectedSource ?? ''}
+            onChange={(e) => setSelectedSource(e.target.value || undefined)}
+            style={{ ...STYLES.input, width: 240 }}
+          >
+            <option value="">All sources</option>
+            {sources?.map((s) => (
+              <option key={s.source_id} value={s.source_id}>{s.source_name}</option>
+            ))}
+          </select>
           <DataTable
             columns={historyColumns}
             data={history ?? []}

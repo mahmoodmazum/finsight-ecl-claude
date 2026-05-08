@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     SCHEDULER_TIMEZONE: str = "Asia/Dhaka"
     ENABLE_SCHEDULER: bool = True
 
+    # Security
+    DISABLE_DUAL_CONTROL: bool = False
+
     @property
     def database_url(self) -> str:
         driver = self.DB_DRIVER.replace(" ", "+")

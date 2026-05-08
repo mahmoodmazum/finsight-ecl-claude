@@ -3,38 +3,58 @@ import { Outlet, Navigate } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { useAuthStore } from '../../stores/authStore'
 import { useReportingMonthStore } from '../../stores/reportingMonthStore'
+import { COLORS, STYLES, badgeStyle } from '../../styles/design-system'
 import { format } from 'date-fns'
 import { toZonedTime } from 'date-fns-tz'
 
 function formatMonthDisplay(m: string): string {
   if (!m || m.length !== 6) return m
-  const year = m.slice(0, 4)
+  const year  = m.slice(0, 4)
   const month = parseInt(m.slice(4), 10)
-  const date = new Date(parseInt(year), month - 1, 1)
+  const date  = new Date(parseInt(year), month - 1, 1)
   return format(date, 'MMM yyyy')
 }
 
 function TopBar() {
-  const { user, logout } = useAuthStore()
+  const { user, logout }                                          = useAuthStore()
   const { selectedMonth, availableMonths, setMonth, loadAvailableMonths } = useReportingMonthStore()
-  const now = toZonedTime(new Date(), 'Asia/Dhaka')
+  const now     = toZonedTime(new Date(), 'Asia/Dhaka')
   const dateStr = format(now, 'dd MMM yyyy, HH:mm') + ' BDT'
 
-  useEffect(() => {
-    loadAvailableMonths()
-  }, [loadAvailableMonths])
+  useEffect(() => { loadAvailableMonths() }, [loadAvailableMonths])
 
   return (
-    <header className="h-14 bg-white border-b border-app-border flex items-center justify-between px-6 sticky top-0 z-10">
-      <div className="text-sm text-gray-400">{dateStr}</div>
-      <div className="flex items-center gap-4">
+    <header style={{
+      height:       56,
+      background:   '#FFFFFF',
+      borderBottom: `1px solid ${COLORS.border}`,
+      display:      'flex',
+      alignItems:   'center',
+      justifyContent: 'space-between',
+      padding:      '0 28px',
+      position:     'sticky',
+      top:          0,
+      zIndex:       10,
+      flexShrink:   0,
+    }}>
+      <div style={{ fontSize: 12, color: COLORS.textMuted }}>{dateStr}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
         {/* Global month selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400 font-medium">Reporting Month</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 11, color: COLORS.textMuted, fontWeight: 600 }}>Reporting Month</span>
           <select
             value={selectedMonth}
             onChange={(e) => setMonth(e.target.value)}
-            className="text-sm font-semibold text-primary bg-primary/5 border border-primary/20 rounded-lg px-3 py-1 focus:outline-none focus:ring-2 focus:ring-primary/30 cursor-pointer"
+            style={{
+              background:   COLORS.topbarChip,
+              border:       `1px solid ${COLORS.border}`,
+              borderRadius: 6,
+              padding:      '5px 12px',
+              fontSize:     13,
+              fontWeight:   600,
+              color:        COLORS.primary,
+              cursor:       'pointer',
+            }}
           >
             {availableMonths.length === 0 && selectedMonth ? (
               <option value={selectedMonth}>{formatMonthDisplay(selectedMonth)}</option>
@@ -46,13 +66,11 @@ function TopBar() {
           </select>
         </div>
 
-        <span className="text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full font-medium">
-          {user?.role}
-        </span>
-        <span className="text-sm font-medium text-gray-700">{user?.full_name}</span>
+        <span style={badgeStyle(COLORS.primary)}>{user?.role}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: COLORS.text }}>{user?.full_name}</span>
         <button
           onClick={logout}
-          className="text-sm text-gray-400 hover:text-gray-700 transition-colors"
+          style={{ ...STYLES.btnGhost, padding: '5px 12px', fontSize: 12 }}
         >
           Sign out
         </button>
@@ -69,11 +87,11 @@ export function Layout() {
   }
 
   return (
-    <div className="flex h-screen bg-app-bg overflow-hidden">
+    <div style={{ display: 'flex', height: '100vh', background: COLORS.bg, overflow: 'hidden' }}>
       <Sidebar />
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <TopBar />
-        <main className="flex-1 overflow-y-auto p-6">
+        <main style={{ flex: 1, overflowY: 'auto', padding: 28 }}>
           <Outlet />
         </main>
       </div>

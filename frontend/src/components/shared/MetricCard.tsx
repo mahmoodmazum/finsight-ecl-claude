@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react'
-import clsx from 'clsx'
+import { COLORS, STYLES } from '../../styles/design-system'
 
 interface MetricCardProps {
   title: string
@@ -11,53 +11,86 @@ interface MetricCardProps {
   loading?: boolean
 }
 
-const variantStyles = {
-  default: 'border-app-border',
-  primary: 'border-primary border-l-4 border-l-primary',
-  stage1: 'border-app-border border-l-4 border-l-stage1',
-  stage2: 'border-app-border border-l-4 border-l-stage2',
-  stage3: 'border-app-border border-l-4 border-l-stage3',
+const accentColors: Record<string, string> = {
+  default:  'transparent',
+  primary:  COLORS.primary,
+  stage1:   COLORS.stage1,
+  stage2:   COLORS.stage2,
+  stage3:   COLORS.stage3,
 }
 
-const variantIconBg = {
-  default: 'bg-gray-100 text-gray-600',
-  primary: 'bg-blue-50 text-primary',
-  stage1: 'bg-green-50 text-stage1',
-  stage2: 'bg-amber-50 text-stage2',
-  stage3: 'bg-red-50 text-stage3',
+const valueColors: Record<string, string> = {
+  default:  COLORS.text,
+  primary:  COLORS.primary,
+  stage1:   COLORS.stage1,
+  stage2:   COLORS.stage2,
+  stage3:   COLORS.stage3,
 }
 
 export function MetricCard({ title, value, subtitle, icon, trend, variant = 'default', loading }: MetricCardProps) {
+  const accentColor = accentColors[variant]
+  const valueColor  = valueColors[variant]
+
   if (loading) {
     return (
-      <div className={clsx('bg-white rounded-xl p-5 border animate-pulse', variantStyles[variant])}>
-        <div className="h-4 bg-gray-200 rounded w-2/3 mb-3" />
-        <div className="h-8 bg-gray-200 rounded w-1/2 mb-2" />
-        <div className="h-3 bg-gray-200 rounded w-1/3" />
+      <div style={{
+        ...STYLES.card,
+        borderLeft: `3px solid ${accentColor}`,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 10,
+      }}>
+        <div className="skeleton" style={{ height: 12, width: '60%' }} />
+        <div className="skeleton" style={{ height: 28, width: '45%' }} />
+        <div className="skeleton" style={{ height: 10, width: '35%' }} />
       </div>
     )
   }
 
   return (
-    <div className={clsx('bg-white rounded-xl p-5 border shadow-sm hover:shadow-md transition-shadow', variantStyles[variant])}>
-      <div className="flex items-start justify-between">
-        <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-gray-500 truncate">{title}</p>
-          <p className="mt-1 text-2xl font-semibold text-gray-900 truncate">{value}</p>
-          {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}
-          {trend && (
-            <div className={clsx('mt-2 flex items-center text-xs font-medium', trend.value >= 0 ? 'text-red-600' : 'text-green-600')}>
-              <span>{trend.value >= 0 ? '↑' : '↓'} {Math.abs(trend.value)}%</span>
-              <span className="ml-1 text-gray-500">{trend.label}</span>
-            </div>
-          )}
-        </div>
-        {icon && (
-          <div className={clsx('ml-4 p-2.5 rounded-lg flex-shrink-0', variantIconBg[variant])}>
-            {icon}
+    <div
+      style={{
+        ...STYLES.card,
+        borderLeft: `3px solid ${accentColor}`,
+        display:    'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 12,
+        transition: 'box-shadow 0.2s',
+      }}
+      onMouseEnter={(e) => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 4px 12px rgba(79,123,232,0.10)' }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.boxShadow = '0 1px 4px rgba(79,123,232,0.06)' }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <p style={STYLES.metricLabel}>{title}</p>
+        <p style={{ ...STYLES.metricValue, color: valueColor, margin: '4px 0 2px' }}>{value}</p>
+        {subtitle && <p style={STYLES.pageSubtitle}>{subtitle}</p>}
+        {trend && (
+          <div style={{
+            marginTop: 6,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            color: trend.value >= 0 ? COLORS.danger : COLORS.success,
+          }}>
+            <span>{trend.value >= 0 ? '↑' : '↓'} {Math.abs(trend.value)}%</span>
+            <span style={{ color: COLORS.textMuted }}>{trend.label}</span>
           </div>
         )}
       </div>
+      {icon && (
+        <div style={{
+          padding: 8,
+          borderRadius: 8,
+          background: accentColor + '18',
+          color: accentColor,
+          flexShrink: 0,
+        }}>
+          {icon}
+        </div>
+      )}
     </div>
   )
 }

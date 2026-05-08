@@ -1,19 +1,32 @@
 import { type ReactNode } from 'react'
+import { COLORS, STYLES } from '../../styles/design-system'
 
 interface SectionHeaderProps {
   title: string
   subtitle?: string
   actions?: ReactNode
+  bordered?: boolean
 }
 
-export function SectionHeader({ title, subtitle, actions }: SectionHeaderProps) {
+export function SectionHeader({ title, subtitle, actions, bordered }: SectionHeaderProps) {
   return (
-    <div className="flex items-start justify-between mb-6">
+    <div style={{
+      display:        'flex',
+      alignItems:     'flex-start',
+      justifyContent: 'space-between',
+      marginBottom:   bordered ? 20 : 0,
+      paddingBottom:  bordered ? 16 : 0,
+      borderBottom:   bordered ? `1px solid ${COLORS.border}` : undefined,
+    }}>
       <div>
-        <h1 className="text-xl font-semibold text-gray-900">{title}</h1>
-        {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}
+        <h1 style={STYLES.pageTitle}>{title}</h1>
+        {subtitle && <p style={STYLES.pageSubtitle}>{subtitle}</p>}
       </div>
-      {actions && <div className="flex items-center gap-3 ml-4">{actions}</div>}
+      {actions && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginLeft: 16 }}>
+          {actions}
+        </div>
+      )}
     </div>
   )
 }
