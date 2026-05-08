@@ -107,12 +107,12 @@ finsight-ecl/
 
 ## Roles
 
-| Role | Permissions |
-|------|-------------|
-| VIEWER | Read-only access to all pages |
-| ANALYST | Read + run ECL calculations + submit overlays |
-| CRO | ANALYST + approve provision runs + approve overlays |
-| ADMIN | Full access including user management |
+| Role    | Permissions                                         |
+| ------- | --------------------------------------------------- |
+| VIEWER  | Read-only access to all pages                       |
+| ANALYST | Read + run ECL calculations + submit overlays       |
+| CRO     | ANALYST + approve provision runs + approve overlays |
+| ADMIN   | Full access including user management               |
 
 ## API Documentation
 
@@ -139,3 +139,8 @@ npm run test
 - Locked provision runs are immutable (API returns 403 on modification attempts)
 - Audit log is append-only (INSTEAD OF DELETE trigger blocks deletions)
 - ECL runs are async — POST returns 202 with run_id; poll GET /ecl/run/{run_id}/status
+
+## Start
+
+- backend: uvicorn app.main:app --reload --port 8000
+- frontend: npm run dev

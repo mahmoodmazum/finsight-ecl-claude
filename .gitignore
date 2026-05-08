@@ -21,3 +21,10 @@ sqlserver_data/
 # Logs
 *.log
 logs/
+
+# Scripts and internal docs
+scripts/
+ClaudeCode_Design_Overhaul_Prompt.md
+fix.md
+EndUserGuide.docx
+screenshots/
