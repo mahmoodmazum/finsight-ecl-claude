@@ -3,6 +3,19 @@ import type { StagingResult, PaginatedResponse } from '../types'
 
 interface StagingResultPage extends PaginatedResponse<StagingResult> {}
 
+export interface StagingRunStatus {
+  run_id: string
+  reporting_month: string
+  status: 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+  accounts_staged: number | null
+  stage1_count: number | null
+  stage2_count: number | null
+  stage3_count: number | null
+  initiated_at: string
+  completed_at: string | null
+  error_message: string | null
+}
+
 export const getStagingResults = async (
   month: string,
   stage?: number,
@@ -37,7 +50,12 @@ export const approveStageOverride = async (staging_id: number): Promise<StagingR
   return data
 }
 
-export const runStagingEngine = async (month: string) => {
-  const { data } = await apiClient.post('/staging/run', null, { params: { month } })
+export const runStagingEngine = async (month: string): Promise<StagingRunStatus> => {
+  const { data } = await apiClient.post<StagingRunStatus>('/staging/run', null, { params: { month } })
+  return data
+}
+
+export const getStagingRunStatus = async (run_id: string): Promise<StagingRunStatus> => {
+  const { data } = await apiClient.get<StagingRunStatus>(`/staging/run/${run_id}`)
   return data
 }
