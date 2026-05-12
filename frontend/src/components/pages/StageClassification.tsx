@@ -1,11 +1,10 @@
 import { useReportingMonthStore } from '../../stores/reportingMonthStore'
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import toast from 'react-hot-toast'
-import { useQueryClient } from '@tanstack/react-query'
 import { SectionHeader } from '../shared/SectionHeader'
 import { StageBadge } from '../shared/StageBadge'
 import { DataTable, type ColumnDef } from '../shared/DataTable'
-import { useStagingResults, useSubmitOverride, useApproveOverride, useRunStaging, useStagingRunStatus } from '../../hooks/useStaging'
+import { useStagingResults, useSubmitOverride, useApproveOverride, useRunStaging } from '../../hooks/useStaging'
 import { usePermissions } from '../../hooks/usePermissions'
 import type { StagingResult } from '../../types'
 import { COLORS, STYLES, badgeStyle, idCell } from '../../styles/design-system'
@@ -26,33 +25,12 @@ export function StageClassification() {
   const [overrideModal, setOverrideModal] = useState<OverrideModalState | null>(null)
   const [newStage, setNewStage]           = useState(1)
   const [reason, setReason]               = useState('')
-  const [activeRunId, setActiveRunId]     = useState<string | null>(null)
   const { can } = usePermissions()
-  const qc = useQueryClient()
 
   const { data, isLoading } = useStagingResults(month, stageFilter, overridesOnly, page, 100)
   const submitOverride = useSubmitOverride()
   const approveOverride = useApproveOverride()
   const runStaging = useRunStaging()
-  const { data: runStatus } = useStagingRunStatus(activeRunId)
-
-  useEffect(() => {
-    if (!runStatus) return
-    if (runStatus.status === 'COMPLETED') {
-      toast.success(`Staging complete: ${runStatus.accounts_staged} accounts staged`)
-      qc.invalidateQueries({ queryKey: ['staging'] })
-      setActiveRunId(null)
-    } else if (runStatus.status === 'FAILED') {
-      toast.error(`Staging failed: ${runStatus.error_message ?? 'Unknown error'}`)
-      setActiveRunId(null)
-    }
-  }, [runStatus?.status])
-
-  const isRunPending = runStaging.isPending || (!!activeRunId && (!runStatus || runStatus.status === 'PENDING' || runStatus.status === 'RUNNING'))
-  const runLabel = runStaging.isPending ? 'Starting\u2026'
-    : runStatus?.status === 'PENDING' ? 'Queued\u2026'
-    : runStatus?.status === 'RUNNING' ? 'Running\u2026'
-    : 'Run Staging'
 
   function handleStageChange(f: number | undefined) { setStageFilter(f); setPage(1) }
 
@@ -122,13 +100,11 @@ export function StageClassification() {
         subtitle="IFRS 9 staging results by loan"
         actions={can('staging:run') ? (
           <button
-            onClick={() => runStaging.mutate(month, {
-              onSuccess: (data) => setActiveRunId(data.run_id),
-            })}
-            disabled={isRunPending}
-            style={{ ...STYLES.btnPrimary, opacity: isRunPending ? 0.6 : 1 }}
+            onClick={() => runStaging.mutate(month)}
+            disabled={runStaging.isPending}
+            style={{ ...STYLES.btnPrimary, opacity: runStaging.isPending ? 0.6 : 1 }}
           >
-            {runLabel}
+            {runStaging.isPending ? 'Running\u2026' : 'Run Staging'}
           </button>
         ) : undefined}
       />

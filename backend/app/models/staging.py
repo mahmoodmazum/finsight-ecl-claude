@@ -5,22 +5,6 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.database import Base
 
 
-class StagingRun(Base):
-    __tablename__ = "staging_runs"
-
-    run_id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    reporting_month: Mapped[str] = mapped_column(String(6), nullable=False, index=True)
-    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING")  # PENDING|RUNNING|COMPLETED|FAILED
-    accounts_staged: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    stage1_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    stage2_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    stage3_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    initiated_by: Mapped[str] = mapped_column(String(36), nullable=False)
-    initiated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
-
-
 class StagingResult(Base):
     __tablename__ = "staging_results"
 

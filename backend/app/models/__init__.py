@@ -5,7 +5,7 @@ from app.auth.models import User, RefreshToken  # noqa
 from app.models.segment import Segment  # noqa
 from app.models.data_source import DataSource, DataLoadHistory, DataQualityIssue  # noqa
 from app.models.loan import LoanAccount, Collateral  # noqa
-from app.models.staging import StagingRun, StagingResult, PDParameter, TransitionMatrix, LGDParameter  # noqa
+from app.models.staging import StagingResult, PDParameter, TransitionMatrix, LGDParameter  # noqa
 from app.models.macro import MacroScenario  # noqa
 from app.models.provision import ProvisionRun, ProvisionMovement, GLEntry  # noqa
 from app.models.ecl import ECLResult  # noqa

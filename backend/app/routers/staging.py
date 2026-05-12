@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -14,7 +14,7 @@ from app.core.rbac import require_permission
 from app.core.audit import write_audit_event
 from app.core.exceptions import NotFoundException
 from app.auth.models import User
-from app.models.staging import StagingRun, StagingResult, TransitionMatrix
+from app.models.staging import StagingResult, TransitionMatrix
 from app.models.loan import LoanAccount
 from app.services.staging_engine import run_staging
 
@@ -70,27 +70,11 @@ class StageOverrideRequest(BaseModel):
 
 
 class StagingRunResponse(BaseModel):
-    run_id: str
     reporting_month: str
-    status: str
-    initiated_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
-class StagingRunStatusOut(BaseModel):
-    run_id: str
-    reporting_month: str
-    status: str
-    accounts_staged: Optional[int] = None
-    stage1_count: Optional[int] = None
-    stage2_count: Optional[int] = None
-    stage3_count: Optional[int] = None
-    initiated_at: datetime
-    completed_at: Optional[datetime] = None
-    error_message: Optional[str] = None
-
-    model_config = {"from_attributes": True}
+    accounts_staged: int
+    stage1: int
+    stage2: int
+    stage3: int
 
 
 # ---------------------------------------------------------------------------
@@ -225,88 +209,32 @@ async def approve_stage_override(
 
 
 # ---------------------------------------------------------------------------
-# Background worker — runs staging in a fresh session after response is sent
-# ---------------------------------------------------------------------------
-
-async def _execute_staging_background(run_id: str, month: str, user_id: str) -> None:
-    from app.database import AsyncSessionLocal
-
-    async with AsyncSessionLocal() as db:
-        try:
-            run = await db.get(StagingRun, run_id)
-            run.status = "RUNNING"
-            await db.commit()
-
-            results = await run_staging(month, db, created_by=user_id)
-
-            stage_counts = {1: 0, 2: 0, 3: 0}
-            for r in results:
-                stage_counts[r.stage] = stage_counts.get(r.stage, 0) + 1
-
-            await write_audit_event(
-                db, "STAGING_RUN_COMPLETE", "staging", month, user_id,
-                after_state={"month": month, "total": len(results), **{f"stage{k}": v for k, v in stage_counts.items()}},
-            )
-
-            run.status = "COMPLETED"
-            run.accounts_staged = len(results)
-            run.stage1_count = stage_counts[1]
-            run.stage2_count = stage_counts[2]
-            run.stage3_count = stage_counts[3]
-            run.completed_at = datetime.now(timezone.utc)
-            await db.commit()
-
-        except Exception as exc:
-            await db.rollback()
-            run = await db.get(StagingRun, run_id)
-            if run:
-                run.status = "FAILED"
-                run.error_message = str(exc)[:500]
-                run.completed_at = datetime.now(timezone.utc)
-                await db.commit()
-
-
-# ---------------------------------------------------------------------------
-# POST /staging/run  — enqueue staging job, return immediately
+# POST /staging/run  — trigger staging engine
 # ---------------------------------------------------------------------------
 
 @router.post("/run", response_model=StagingRunResponse, status_code=202)
 async def run_staging_engine(
     month: str = Query(..., pattern=r"^\d{6}$"),
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(require_permission("staging:run")),
 ):
-    """Enqueue a staging run. Poll GET /staging/run/{run_id} for status."""
-    run_id = str(uuid.uuid4())
-    run = StagingRun(
-        run_id=run_id,
-        reporting_month=month,
-        status="PENDING",
-        initiated_by=current_user.user_id,
+    """Run the staging engine for a reporting month."""
+    results = await run_staging(month, db, created_by=current_user.user_id)
+
+    stage_counts = {1: 0, 2: 0, 3: 0}
+    for r in results:
+        stage_counts[r.stage] = stage_counts.get(r.stage, 0) + 1
+
+    await write_audit_event(
+        db, "STAGING_RUN_COMPLETE", "staging", month, current_user.user_id,
+        after_state={"month": month, "total": len(results), **{f"stage{k}": v for k, v in stage_counts.items()}},
     )
-    db.add(run)
     await db.commit()
-    await db.refresh(run)
 
-    background_tasks.add_task(_execute_staging_background, run_id, month, current_user.user_id)
-
-    return run
-
-
-# ---------------------------------------------------------------------------
-# GET /staging/run/{run_id}  — poll job status
-# ---------------------------------------------------------------------------
-
-@router.get("/run/{run_id}", response_model=StagingRunStatusOut)
-async def get_staging_run_status(
-    run_id: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(require_permission("staging:view")),
-):
-    """Return the current status of a staging run."""
-    result = await db.execute(select(StagingRun).where(StagingRun.run_id == run_id))
-    run = result.scalar_one_or_none()
-    if not run:
-        raise NotFoundException(f"Staging run {run_id} not found")
-    return run
+    return StagingRunResponse(
+        reporting_month=month,
+        accounts_staged=len(results),
+        stage1=stage_counts.get(1, 0),
+        stage2=stage_counts.get(2, 0),
+        stage3=stage_counts.get(3, 0),
+    )

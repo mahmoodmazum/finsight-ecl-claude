@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { getStagingResults, getMigrationMatrix, submitStageOverride, approveStageOverride, runStagingEngine, getStagingRunStatus } from '../api/staging'
+import { getStagingResults, getMigrationMatrix, submitStageOverride, approveStageOverride, runStagingEngine } from '../api/staging'
 import toast from 'react-hot-toast'
 
 export const useStagingResults = (month: string, stage?: number, overrides_only = false, page = 1, page_size = 100) =>
@@ -42,20 +42,14 @@ export const useApproveOverride = () => {
   })
 }
 
-export const useRunStaging = () =>
-  useMutation({
+export const useRunStaging = () => {
+  const qc = useQueryClient()
+  return useMutation({
     mutationFn: (month: string) => runStagingEngine(month),
-    onError: () => toast.error('Failed to start staging run'),
-  })
-
-export const useStagingRunStatus = (run_id: string | null) =>
-  useQuery({
-    queryKey: ['staging', 'run', run_id],
-    queryFn: () => getStagingRunStatus(run_id!),
-    enabled: !!run_id,
-    refetchInterval: (query) => {
-      const status = query.state.data?.status
-      if (!status || status === 'PENDING' || status === 'RUNNING') return 2000
-      return false
+    onSuccess: (data) => {
+      toast.success(`Staging complete: ${data.accounts_staged} accounts staged`)
+      qc.invalidateQueries({ queryKey: ['staging'] })
     },
+    onError: () => toast.error('Staging engine failed'),
   })
+}
